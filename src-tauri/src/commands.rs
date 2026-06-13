@@ -17,43 +17,6 @@ pub struct Note {
 }
 
 #[tauri::command]
-pub async fn add_note(
-    content: String,
-    thought_at: Option<String>,
-    db: State<'_, Mutex<Connection>>,
-) -> Result<Note, String> {
-    let id = Uuid::new_v4().to_string();
-    let logged_at = Utc::now().to_rfc3339();
-    let thought_at = thought_at.unwrap_or_else(|| logged_at.clone());
-
-    let note = Note {
-        id: id.clone(),
-        content: content.clone(),
-        thought_at: thought_at.clone(),
-        logged_at: logged_at.clone(),
-        sentiment: None,
-        embedding_ref: None,
-    };
-
-    let conn = db.lock().map_err(|e| e.to_string())?;
-    conn.execute(
-        "INSERT INTO notes (id, content, thought_at, logged_at, sentiment, embedding_ref)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        rusqlite::params![
-            &note.id,
-            &note.content,
-            &note.thought_at,
-            &note.logged_at,
-            &note.sentiment,
-            &note.embedding_ref,
-        ],
-    )
-    .map_err(|e| e.to_string())?;
-
-    Ok(note)
-}
-
-#[tauri::command]
 pub fn get_notes(db: State<'_, Mutex<Connection>>) -> Result<Vec<Note>, String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn
@@ -169,4 +132,54 @@ pub async fn chat(query: String, db: State<'_, Mutex<Connection>>) -> Result<Str
         .map_err(|e| e.to_string())?;
 
     Ok(res.message.content)
+}
+
+#[tauri::command]
+pub async fn add_note(
+    content: String,
+    thought_at: Option<String>,
+    db: State<'_, Mutex<Connection>>,
+) -> Result<Note, String> {
+    let id = Uuid::new_v4().to_string();
+    let logged_at = Utc::now().to_rfc3339();
+    let thought_at = thought_at.unwrap_or_else(|| logged_at.clone());
+
+    let note = Note {
+        id: id.clone(),
+        content: content.clone(),
+        thought_at: thought_at.clone(),
+        logged_at: logged_at.clone(),
+        sentiment: None,
+        embedding_ref: None,
+    };
+
+    {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO notes (id, content, thought_at, logged_at, sentiment, embedding_ref)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                &note.id,
+                &note.content,
+                &note.thought_at,
+                &note.logged_at,
+                &note.sentiment,
+                &note.embedding_ref,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    // Generate and store embedding asynchronously
+    match crate::embeddings::get_embedding(&content).await {
+        Ok(embedding) => {
+            let conn = db.lock().map_err(|e| e.to_string())?;
+            let _ = crate::embeddings::store_embedding(&conn, &id, &embedding);
+        }
+        Err(e) => {
+            eprintln!("Embedding generation failed: {}", e);
+        }
+    }
+
+    Ok(note)
 }
