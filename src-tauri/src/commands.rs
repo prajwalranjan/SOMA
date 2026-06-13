@@ -138,10 +138,27 @@ pub fn search_notes(
 
 #[tauri::command]
 pub async fn chat(query: String, db: State<'_, Arc<Mutex<Connection>>>) -> Result<String, String> {
+    // Step 1: get query embedding and relevant notes — drop lock before await
+    let query_embedding = crate::embeddings::get_embedding(&query)
+        .await
+        .map_err(|e| e.to_string())?;
+
     let relevant_notes = {
         let conn = db.lock().map_err(|e| e.to_string())?;
-        crate::retrieval::search(&conn, &query).map_err(|e| e.to_string())?
-    };
+        let count: usize = conn
+            .query_row(
+                "SELECT COUNT(*) FROM notes WHERE embedding_ref IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        if count >= 3 {
+            crate::retrieval::semantic_search(&conn, &query_embedding).map_err(|e| e.to_string())?
+        } else {
+            crate::retrieval::fulltext_search(&conn, &query).map_err(|e| e.to_string())?
+        }
+    }; // lock dropped here
 
     let context = if relevant_notes.is_empty() {
         "No relevant notes found.".to_string()
