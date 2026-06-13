@@ -345,3 +345,22 @@ pub async fn reindex_notes(db: State<'_, Arc<Mutex<Connection>>>) -> Result<usiz
 
     Ok(count)
 }
+
+#[tauri::command]
+pub fn debug_embeddings(db: State<'_, Arc<Mutex<Connection>>>) -> Result<String, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let total: i64 = conn
+        .query_row("SELECT COUNT(*) FROM notes", [], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    let with_embeddings: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM notes WHERE embedding_ref IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(format!(
+        "{}/{} notes have embeddings",
+        with_embeddings, total
+    ))
+}

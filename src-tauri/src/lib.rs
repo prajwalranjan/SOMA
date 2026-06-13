@@ -35,6 +35,7 @@ pub fn run() {
             commands::get_insights,
             commands::generate_insights,
             commands::reindex_notes,
+            commands::debug_embeddings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

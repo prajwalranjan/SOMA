@@ -14,8 +14,8 @@ pub struct TemporalPattern {
 }
 
 // DBSCAN parameters
-const EPSILON: f32 = 0.2; // max cosine distance for neighbours (1 - similarity)
-const MIN_POINTS: usize = 3; // minimum notes to form a cluster
+const EPSILON: f32 = 0.4; // max cosine distance for neighbours (1 - similarity)
+const MIN_POINTS: usize = 2; // minimum notes to form a cluster
 
 pub fn run_clustering(conn: &Connection) -> Result<Vec<Cluster>> {
     let embeddings = get_all_embeddings(conn)?;

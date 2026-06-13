@@ -26,12 +26,16 @@ export function useInsights() {
     async function generateInsights() {
         try {
             setGenerating(true);
+            console.log("Calling generate_insights...");
             const newInsights = await invoke<Insight[]>("generate_insights");
+            console.log("Result:", newInsights);
             if (newInsights.length > 0) {
                 setInsights((prev) => [...newInsights, ...prev]);
+            } else {
+                console.log("No new insights returned");
             }
         } catch (e) {
-            console.error(e);
+            console.error("generate_insights error:", e);
         } finally {
             setGenerating(false);
         }

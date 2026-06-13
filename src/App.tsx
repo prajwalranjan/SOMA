@@ -19,13 +19,6 @@ function App() {
 
       <hr />
 
-      <button onClick={async () => {
-        const count = await invoke<number>("reindex_notes");
-        alert(`Reindexed ${count} notes`);
-      }}>
-        Reindex notes
-      </button>
-
       <h2>Notes</h2>
       {loading && <p>Loading...</p>}
       {notes.length === 0 && !loading && (
@@ -54,6 +47,13 @@ function App() {
       <hr />
       <h2>Chat with SOMA</h2>
       <ChatPane />
+
+      <button onClick={async () => {
+        const result = await invoke<string>("debug_embeddings");
+        alert(result);
+      }}>
+        Debug embeddings
+      </button>
 
       <hr />
       <InsightsFeed />
