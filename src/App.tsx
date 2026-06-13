@@ -1,49 +1,45 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
+import { NoteInput } from "./components/NoteInput";
+import { useNotes } from "./hooks/useNotes";
 import "./App.css";
 
 function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
-
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+  const { notes, loading, createNote } = useNotes();
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
+    <main style={{ maxWidth: "800px", margin: "0 auto", padding: "1rem" }}>
+      <h1>SOMA</h1>
+      <p style={{ color: "#888", marginTop: "-0.5rem" }}>
+        Semantic Offline Memory Assistant
+      </p>
 
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
+      <NoteInput createNote={createNote} />
 
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
+      <hr />
+
+      <h2>Notes</h2>
+      {loading && <p>Loading...</p>}
+      {notes.length === 0 && !loading && (
+        <p style={{ color: "#888" }}>No notes yet. Start capturing thoughts.</p>
+      )}
+      {notes.map((note) => (
+        <div
+          key={note.id}
+          style={{
+            border: "1px solid #333",
+            borderRadius: "8px",
+            padding: "1rem",
+            marginBottom: "0.75rem",
+          }}
+        >
+          <p style={{ margin: 0 }}>{note.content}</p>
+          <small style={{ color: "#888" }}>
+            {new Date(note.logged_at).toLocaleString()}
+            {note.thought_at !== note.logged_at && (
+              <> · thought at {new Date(note.thought_at).toLocaleString()}</>
+            )}
+          </small>
+        </div>
+      ))}
     </main>
   );
 }
