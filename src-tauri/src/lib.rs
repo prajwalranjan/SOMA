@@ -20,7 +20,9 @@ pub fn run() {
             std::fs::create_dir_all(&app_dir).expect("failed to create app data dir");
             let db_path = app_dir.join("soma.db");
             let conn = db::init_db(&db_path).expect("failed to initialise database");
-            app.manage(std::sync::Mutex::new(conn));
+            let conn = std::sync::Arc::new(std::sync::Mutex::new(conn));
+            crate::scheduler::start_scheduler(conn.clone());
+            app.manage(conn);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -30,6 +32,9 @@ pub fn run() {
             commands::chat,
             commands::save_message,
             commands::get_chat_history,
+            commands::get_insights,
+            commands::generate_insights,
+            commands::reindex_notes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

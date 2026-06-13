@@ -1,6 +1,8 @@
 import { NoteInput } from "./components/NoteInput";
 import { useNotes } from "./hooks/useNotes";
 import { ChatPane } from "./components/ChatPane";
+import { InsightsFeed } from "./components/InsightsFeed";
+import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
 function App() {
@@ -16,6 +18,13 @@ function App() {
       <NoteInput createNote={createNote} />
 
       <hr />
+
+      <button onClick={async () => {
+        const count = await invoke<number>("reindex_notes");
+        alert(`Reindexed ${count} notes`);
+      }}>
+        Reindex notes
+      </button>
 
       <h2>Notes</h2>
       {loading && <p>Loading...</p>}
@@ -45,6 +54,9 @@ function App() {
       <hr />
       <h2>Chat with SOMA</h2>
       <ChatPane />
+
+      <hr />
+      <InsightsFeed />
     </main>
   );
 }
