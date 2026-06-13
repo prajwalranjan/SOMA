@@ -3,8 +3,37 @@ use crate::services::prompt_builder::PromptBuilder;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-const EPSILON: f32 = 0.4;
 const MIN_POINTS: usize = 2;
+
+fn compute_adaptive_epsilon(embeddings: &[crate::models::Embedding]) -> f32 {
+    if embeddings.len() < 2 {
+        return 0.4;
+    }
+
+    let mut similarities: Vec<f32> = vec![];
+
+    for i in 0..embeddings.len() {
+        for j in (i + 1)..embeddings.len() {
+            let sim =
+                EmbeddingService::cosine_similarity(&embeddings[i].vector, &embeddings[j].vector);
+            similarities.push(sim);
+        }
+    }
+
+    similarities.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    let mean = similarities.iter().sum::<f32>() / similarities.len() as f32;
+    let median = similarities[similarities.len() / 2];
+    let similarity_threshold = (mean + median) / 2.0;
+    let epsilon = 1.0 - similarity_threshold;
+
+    println!(
+        "Adaptive EPSILON: {:.3} (mean sim: {:.3}, median sim: {:.3}, threshold: {:.3})",
+        epsilon, mean, median, similarity_threshold
+    );
+
+    epsilon.clamp(0.3, 0.6)
+}
 
 #[derive(Serialize)]
 struct OllamaMessage {
@@ -43,6 +72,7 @@ impl InsightService {
     }
 
     pub fn cluster_embeddings(&self, embeddings: &[crate::models::Embedding]) -> Vec<Vec<String>> {
+        let epsilon = compute_adaptive_epsilon(embeddings);
         let n = embeddings.len();
         let mut labels: Vec<i32> = vec![-1; n];
         let mut cluster_id = 0i32;
@@ -51,7 +81,7 @@ impl InsightService {
             if labels[i] != -1 {
                 continue;
             }
-            let neighbours = self.region_query(embeddings, i);
+            let neighbours = self.region_query(embeddings, i, epsilon);
             if neighbours.len() < MIN_POINTS {
                 labels[i] = -2;
                 continue;
@@ -69,7 +99,7 @@ impl InsightService {
                     continue;
                 }
                 labels[q] = cluster_id;
-                let q_neighbours = self.region_query(embeddings, q);
+                let q_neighbours = self.region_query(embeddings, q, epsilon);
                 if q_neighbours.len() >= MIN_POINTS {
                     for &nb in &q_neighbours {
                         if !seed_set.contains(&nb) {
@@ -95,7 +125,12 @@ impl InsightService {
             .collect()
     }
 
-    fn region_query(&self, embeddings: &[crate::models::Embedding], idx: usize) -> Vec<usize> {
+    fn region_query(
+        &self,
+        embeddings: &[crate::models::Embedding],
+        idx: usize,
+        epsilon: f32,
+    ) -> Vec<usize> {
         embeddings
             .iter()
             .enumerate()
@@ -104,7 +139,7 @@ impl InsightService {
                     return false;
                 }
                 let sim = EmbeddingService::cosine_similarity(&embeddings[idx].vector, &emb.vector);
-                (1.0 - sim) <= EPSILON
+                (1.0 - sim) <= epsilon
             })
             .map(|(j, _)| j)
             .collect()
@@ -133,6 +168,7 @@ impl InsightService {
             .await?;
 
         let response = res.message.content;
+
         let title = response
             .lines()
             .find(|l| l.starts_with("TITLE:"))

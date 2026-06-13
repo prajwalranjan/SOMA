@@ -55,6 +55,14 @@ function App() {
         Debug embeddings
       </button>
 
+      <button onClick={async () => {
+        const result = await invoke<string>("debug_clustering");
+        console.log(result);
+        alert(result);
+      }}>
+        Debug clustering
+      </button>
+
       <hr />
       <InsightsFeed />
     </main>

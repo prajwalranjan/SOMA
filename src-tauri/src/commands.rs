@@ -193,12 +193,53 @@ pub async fn generate_insights(
 pub fn debug_embeddings(db: State<'_, Arc<Mutex<Connection>>>) -> Result<String, String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
     let repo = SqliteNoteRepository { conn: &conn };
+
     let total: i64 = conn
         .query_row("SELECT COUNT(*) FROM notes", [], |row| row.get(0))
         .map_err(|e| e.to_string())?;
-    let with_embeddings = repo.count_with_embeddings().map_err(|e| e.to_string())?;
+
+    let embeddings = repo.get_all_embeddings().map_err(|e| e.to_string())?;
+    let with_embeddings = embeddings.len();
+
+    let embedding_sizes: Vec<usize> = embeddings.iter().map(|e| e.vector.len()).collect();
+    let avg_size = if embedding_sizes.is_empty() {
+        0
+    } else {
+        embedding_sizes.iter().sum::<usize>() / embedding_sizes.len()
+    };
+
     Ok(format!(
-        "{}/{} notes have embeddings",
-        with_embeddings, total
+        "{}/{} notes have embeddings. Avg vector size: {}. Sizes: {:?}",
+        with_embeddings, total, avg_size, embedding_sizes
     ))
+}
+
+#[tauri::command]
+pub fn debug_clustering(db: State<'_, Arc<Mutex<Connection>>>) -> Result<String, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let repo = SqliteNoteRepository { conn: &conn };
+    let embeddings = repo.get_all_embeddings().map_err(|e| e.to_string())?;
+
+    if embeddings.len() < 2 {
+        return Ok("Not enough embeddings to cluster".to_string());
+    }
+
+    // Print similarity matrix
+    let mut output = format!("Notes with embeddings: {}\n\n", embeddings.len());
+    output.push_str("Similarity matrix:\n");
+
+    for i in 0..embeddings.len() {
+        for j in 0..embeddings.len() {
+            if i == j {
+                continue;
+            }
+            let sim = crate::services::embedding_service::EmbeddingService::cosine_similarity(
+                &embeddings[i].vector,
+                &embeddings[j].vector,
+            );
+            output.push_str(&format!("Note[{}] vs Note[{}]: {:.3}\n", i, j, sim));
+        }
+    }
+
+    Ok(output)
 }
