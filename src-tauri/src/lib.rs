@@ -1,10 +1,9 @@
-mod clustering;
 mod commands;
 mod db;
-mod embeddings;
-mod insights;
-mod retrieval;
+mod models;
+mod repository;
 mod scheduler;
+mod services;
 
 use tauri::Manager;
 
@@ -28,13 +27,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::add_note,
             commands::get_notes,
-            commands::search_notes,
             commands::chat,
             commands::save_message,
             commands::get_chat_history,
             commands::get_insights,
             commands::generate_insights,
-            commands::reindex_notes,
             commands::debug_embeddings,
         ])
         .run(tauri::generate_context!())
