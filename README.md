@@ -5,11 +5,19 @@ SOMA is a fully offline, privacy-first personal knowledge base. Capture any thou
 
 ---
 
+## Download
+
+[**Download SOMA v0.1.0 for Windows**](https://github.com/prajwalranjan/SOMA/releases/tag/v0.1.0)
+
+> Requires [Ollama](https://ollama.ai) — models are downloaded on first launch.
+
+---
+
 ## What it does
 
 - **Capture anything** — notes, thoughts, ideas, emotions. No structure required.
 - **Chat with your knowledge base** — ask questions, get answers grounded in what you've written.
-- **Surface patterns you didn't notice** — SOMA's insight engine detects semantic clusters with temporal patterns. If you tend to write about loneliness at midnight, SOMA notices. You might not have.
+- **Surface patterns you didn't notice** — SOMA's insight engine detects semantic clusters with temporal patterns. If you tend to write about something at the same time of day, SOMA notices.
 
 ---
 
@@ -17,71 +25,29 @@ SOMA is a fully offline, privacy-first personal knowledge base. Capture any thou
 
 SOMA runs entirely on your machine using:
 
-- **Ollama** for on-device LLM inference and embeddings (no internet required after setup)
-- **LanceDB** for local vector storage and hybrid retrieval
-- **SQLite** for note storage
+- **Ollama** for on-device LLM inference and embeddings
+- **SQLite** for note and chat storage
+- **Adaptive DBSCAN** for semantic clustering
 - **Tauri** (Rust + React) as the desktop shell
 
-The retrieval engine adapts to your knowledge base size — full-text search when your notes are few, semantic vector search as they grow. The background insight processor runs periodically, clusters your notes semantically, checks for temporal coherence, and pushes meaningful patterns to your insights feed.
-
----
-
-## Architecture
-
-```
-Input layer
-  └── Text note · thought_at (user-set) · logged_at (auto)
-
-Core engine
-  ├── SQLite store       — id, content, thought_at, logged_at, sentiment (nullable), embedding ref
-  ├── Embedding engine   — nomic-embed-text via Ollama
-  ├── LanceDB            — local vector store, thought_at indexed
-  ├── Retrieval logic    — strategy pattern: fulltext (< N notes) → semantic (≥ N notes)
-  └── LLM inference      — Phi-3 mini / Llama 3.2 3B via Ollama · quantised GGUF · CPU+GPU
-
-Output surfaces
-  ├── Chat interface     — reactive · query your knowledge base
-  └── Insights feed      — proactive · SOMA surfaces temporal-semantic patterns
-
-Background insight processor (scheduled)
-  └── DBSCAN clustering on embeddings → temporal pattern check → push to insights feed
-
-Tauri shell — Rust backend · React frontend · fully offline · zero cloud
-```
+The retrieval engine adapts to your knowledge base size — full-text search when your notes are few, semantic vector search as they grow.
 
 ---
 
 ## System requirements
 
-- Windows 10/11, macOS, or Linux
+- Windows 10/11 x64
 - 8GB RAM minimum (16GB recommended)
-- 5GB free disk space (for models)
-- Any modern CPU (11th gen Intel or equivalent)
-- Dedicated GPU optional but improves inference speed
+- 5GB free disk space for models
+- [Ollama](https://ollama.ai) installed separately
 
 ---
 
 ## Setup
 
-> Full setup guide in [docs/setup.md](docs/setup.md)
-
-**Quick start:**
-
-1. Install [Ollama](https://ollama.ai) and pull models:
-   ```bash
-   ollama pull nomic-embed-text
-   ollama pull phi3:mini
-   ```
-
-2. Install [Node.js v20+](https://nodejs.org) and [Rust](https://rustup.rs)
-
-3. Clone and run:
-   ```bash
-   git clone https://github.com/prajwalranjan/SOMA.git
-   cd SOMA
-   npm install
-   npm run tauri dev
-   ```
+1. Download and run `SOMA_0.1.0_x64-setup.exe`
+2. Install [Ollama](https://ollama.ai)
+3. Launch SOMA — it will guide you through pulling the required models
 
 ---
 
@@ -127,7 +93,7 @@ soma/
 
 ## Status
 
-> 🚧 Active development — v0.1.0 in progress
+> 🚧 Active development — v0.1.0
 
 ---
 
