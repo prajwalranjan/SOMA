@@ -1,0 +1,34 @@
+# Runtime data — never commit
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Rust
+target/
+Cargo.lock
+
+# Node
+node_modules/
+dist/
+
+# Tauri build outputs
+src-tauri/target/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Env
+.env
+.env.local
+
+# Logs
+*.log
