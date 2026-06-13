@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { SetupPage } from "./pages/SetupPage";
 import { NotesPage } from "./pages/NotesPage";
 import { ChatPage } from "./pages/ChatPage";
 import { InsightsPage } from "./pages/InsightsPage";
@@ -14,10 +16,26 @@ const NAV = [
 
 export default function App() {
   const [page, setPage] = useState<Page>("notes");
+  const [setupDone, setSetupDone] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    invoke<boolean>("check_ollama").then(setSetupDone).catch(() => setSetupDone(false));
+  }, []);
+
+  if (setupDone === null) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: "var(--bg)", color: "var(--text-muted)", fontSize: "13px" }}>
+        Starting SOMA...
+      </div>
+    );
+  }
+
+  if (!setupDone) {
+    return <SetupPage onComplete={() => setSetupDone(true)} />;
+  }
 
   return (
     <div style={{ display: "flex", height: "100vh", background: "var(--bg)" }}>
-      {/* Sidebar */}
       <aside style={{
         width: "var(--sidebar-width)",
         background: "var(--sidebar-bg)",
@@ -26,31 +44,13 @@ export default function App() {
         flexDirection: "column",
         flexShrink: 0,
       }}>
-        {/* Logo */}
-        <div style={{
-          padding: "24px 20px 20px",
-          borderBottom: "1px solid var(--border)",
-        }}>
-          <div style={{
-            fontSize: "18px",
-            fontWeight: 600,
-            letterSpacing: "0.08em",
-            color: "var(--text-primary)",
-          }}>
-            SOMA
-          </div>
-          <div style={{
-            fontSize: "11px",
-            color: "var(--text-muted)",
-            marginTop: "2px",
-            fontFamily: "var(--font-mono)",
-            letterSpacing: "0.05em",
-          }}>
+        <div style={{ padding: "24px 20px 20px", borderBottom: "1px solid var(--border)" }}>
+          <div style={{ fontSize: "18px", fontWeight: 600, letterSpacing: "0.08em" }}>SOMA</div>
+          <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "2px", fontFamily: "var(--font-mono)", letterSpacing: "0.05em" }}>
             your memory
           </div>
         </div>
 
-        {/* Nav */}
         <nav style={{ padding: "12px 0", flex: 1 }}>
           {NAV.map((item) => (
             <button
@@ -66,17 +66,12 @@ export default function App() {
                 color: page === item.id ? "var(--text-primary)" : "var(--text-muted)",
                 fontSize: "13px",
                 fontWeight: page === item.id ? 500 : 400,
-                borderLeft: page === item.id
-                  ? "2px solid var(--accent)"
-                  : "2px solid transparent",
+                borderLeft: page === item.id ? "2px solid var(--accent)" : "2px solid transparent",
                 transition: "all 0.15s ease",
                 textAlign: "left",
               }}
             >
-              <span style={{
-                color: page === item.id ? "var(--accent)" : "var(--text-muted)",
-                fontSize: "12px",
-              }}>
+              <span style={{ color: page === item.id ? "var(--accent)" : "var(--text-muted)", fontSize: "12px" }}>
                 {item.icon}
               </span>
               {item.label}
@@ -84,19 +79,11 @@ export default function App() {
           ))}
         </nav>
 
-        {/* Footer */}
-        <div style={{
-          padding: "16px 20px",
-          borderTop: "1px solid var(--border)",
-          fontSize: "11px",
-          color: "var(--text-muted)",
-          fontFamily: "var(--font-mono)",
-        }}>
+        <div style={{ padding: "16px 20px", borderTop: "1px solid var(--border)", fontSize: "11px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
           offline · private
         </div>
       </aside>
 
-      {/* Main content */}
       <main style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
         {page === "notes" && <NotesPage />}
         {page === "chat" && <ChatPage />}
