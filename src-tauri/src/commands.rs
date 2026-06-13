@@ -183,3 +183,42 @@ pub async fn add_note(
 
     Ok(note)
 }
+
+#[tauri::command]
+pub fn save_message(
+    role: String,
+    content: String,
+    timestamp: String,
+    db: State<'_, Mutex<Connection>>,
+) -> Result<(), String> {
+    let id = Uuid::new_v4().to_string();
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO chat_history (id, role, content, timestamp) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![id, role, content, timestamp],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_chat_history(db: State<'_, Mutex<Connection>>) -> Result<Vec<ChatMessage>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT role, content, timestamp FROM chat_history ORDER BY timestamp ASC")
+        .map_err(|e| e.to_string())?;
+
+    let messages = stmt
+        .query_map([], |row| {
+            Ok(ChatMessage {
+                role: row.get(0)?,
+                content: row.get(1)?,
+                timestamp: row.get(2)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    Ok(messages)
+}

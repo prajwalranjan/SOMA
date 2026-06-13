@@ -3,7 +3,8 @@ use std::path::Path;
 
 pub fn init_db(db_path: &Path) -> Result<Connection> {
     let conn = Connection::open(db_path)?;
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         PRAGMA journal_mode=WAL;
         PRAGMA foreign_keys=ON;
 
@@ -23,6 +24,14 @@ pub fn init_db(db_path: &Path) -> Result<Connection> {
             created_at TEXT NOT NULL,
             note_ids TEXT NOT NULL
         );
-    ")?;
+
+        CREATE TABLE IF NOT EXISTS chat_history (
+            id TEXT PRIMARY KEY,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            timestamp TEXT NOT NULL
+        );
+    ",
+    )?;
     Ok(conn)
 }
