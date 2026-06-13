@@ -80,3 +80,9 @@ pub fn get_notes(db: State<'_, Mutex<Connection>>) -> Result<Vec<Note>, String> 
 
     Ok(notes)
 }
+
+#[tauri::command]
+pub fn search_notes(query: String, db: State<'_, Mutex<Connection>>) -> Result<Vec<Note>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    crate::retrieval::search(&conn, &query).map_err(|e| e.to_string())
+}
