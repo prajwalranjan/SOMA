@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "soma",
+  "productName": "SOMA",
   "version": "0.1.0",
   "identifier": "com.soma.app",
   "build": {
@@ -12,9 +12,12 @@
   "app": {
     "windows": [
       {
-        "title": "soma",
-        "width": 800,
-        "height": 600
+        "title": "SOMA",
+        "width": 1100,
+        "height": 720,
+        "minWidth": 800,
+        "minHeight": 600,
+        "center": true
       }
     ],
     "security": {
@@ -30,6 +33,10 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "publisher": "Prajwal Ranjan",
+    "copyright": "© 2026 Prajwal Ranjan",
+    "shortDescription": "Semantic Offline Memory Assistant",
+    "longDescription": "SOMA is a fully offline, privacy-first personal knowledge base. Capture any thought, idea, task, or emotion — and query it later like a personal assistant. No cloud. No accounts. No data leaving your machine."
   }
 }
