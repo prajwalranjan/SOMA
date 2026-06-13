@@ -86,3 +86,87 @@ pub fn search_notes(query: String, db: State<'_, Mutex<Connection>>) -> Result<V
     let conn = db.lock().map_err(|e| e.to_string())?;
     crate::retrieval::search(&conn, &query).map_err(|e| e.to_string())
 }
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
+    pub timestamp: String,
+}
+
+#[derive(Serialize)]
+struct OllamaMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Serialize)]
+struct ChatRequest {
+    model: String,
+    messages: Vec<OllamaMessage>,
+    stream: bool,
+}
+
+#[derive(Deserialize)]
+struct ChatResponse {
+    message: OllamaMessageResponse,
+}
+
+#[derive(Deserialize)]
+struct OllamaMessageResponse {
+    content: String,
+}
+
+#[tauri::command]
+pub async fn chat(query: String, db: State<'_, Mutex<Connection>>) -> Result<String, String> {
+    // Search relevant notes
+    let relevant_notes = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        crate::retrieval::search(&conn, &query).map_err(|e| e.to_string())?
+    };
+
+    // Build context from relevant notes
+    let context = if relevant_notes.is_empty() {
+        "No relevant notes found.".to_string()
+    } else {
+        relevant_notes
+            .iter()
+            .map(|n| format!("[{}] {}", n.thought_at, n.content))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    // Build prompt
+    let system_prompt = format!(
+        "You are SOMA, a personal memory assistant. \
+        You help the user reflect on their thoughts, ideas, and experiences. \
+        Answer based on the following notes from the user's knowledge base:\n\n{}",
+        context
+    );
+
+    let client = reqwest::Client::new();
+    let res = client
+        .post("http://localhost:11434/api/chat")
+        .json(&ChatRequest {
+            model: "phi3:mini".to_string(),
+            messages: vec![
+                OllamaMessage {
+                    role: "system".to_string(),
+                    content: system_prompt,
+                },
+                OllamaMessage {
+                    role: "user".to_string(),
+                    content: query,
+                },
+            ],
+            stream: false,
+        })
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json::<ChatResponse>()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(res.message.content)
+}

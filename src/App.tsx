@@ -1,5 +1,6 @@
 import { NoteInput } from "./components/NoteInput";
 import { useNotes } from "./hooks/useNotes";
+import { ChatPane } from "./components/ChatPane";
 import "./App.css";
 
 function App() {
@@ -40,6 +41,10 @@ function App() {
           </small>
         </div>
       ))}
+
+      <hr />
+      <h2>Chat with SOMA</h2>
+      <ChatPane />
     </main>
   );
 }
