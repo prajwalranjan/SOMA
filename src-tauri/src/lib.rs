@@ -33,6 +33,7 @@ pub fn run() {
             commands::get_insights,
             commands::generate_insights,
             commands::debug_embeddings,
+            commands::debug_clustering,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
