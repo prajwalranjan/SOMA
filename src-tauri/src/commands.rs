@@ -3,9 +3,11 @@ use crate::repository::insight_repo::SqliteInsightRepository;
 use crate::repository::note_repo::NoteRepository;
 use crate::repository::note_repo::SqliteNoteRepository;
 use crate::services::{ChatService, EmbeddingService, InsightService, RetrievalService};
+use chrono::Utc;
 use rusqlite::Connection;
 use std::sync::{Arc, Mutex};
 use tauri::State;
+use uuid::Uuid;
 
 #[tauri::command]
 pub async fn add_note(
@@ -20,19 +22,35 @@ pub async fn add_note(
             .map_err(|e| e.to_string())?
     };
 
-    // Fire embedding in background
+    // Chunk and save chunks
+    let chunking_svc = crate::services::ChunkingService::new();
+    let chunks = chunking_svc.chunk(&note.id, &content);
+
+    {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        let chunk_repo = crate::repository::chunk_repo::SqliteChunkRepository { conn: &conn };
+        crate::repository::chunk_repo::ChunkRepository::save_chunks(&chunk_repo, &chunks)
+            .map_err(|e| e.to_string())?;
+    }
+
+    // Generate embeddings for each chunk in background
     let db_clone = db.inner().clone();
-    let content_clone = content.clone();
-    let note_id = note.id.clone();
     tokio::spawn(async move {
         let svc = EmbeddingService::new();
-        match svc.generate(&note_id, &content_clone).await {
-            Ok(embedding) => {
-                let conn = db_clone.lock().unwrap();
-                let repo = SqliteNoteRepository { conn: &conn };
-                let _ = repo.store_embedding(&embedding);
+        for chunk in &chunks {
+            match svc.generate(&chunk.id, &chunk.content).await {
+                Ok(embedding) => {
+                    let conn = db_clone.lock().unwrap();
+                    let chunk_repo =
+                        crate::repository::chunk_repo::SqliteChunkRepository { conn: &conn };
+                    let _ = crate::repository::chunk_repo::ChunkRepository::update_embedding(
+                        &chunk_repo,
+                        &chunk.id,
+                        &embedding.vector,
+                    );
+                }
+                Err(e) => eprintln!("Chunk embedding failed: {}", e),
             }
-            Err(e) => eprintln!("Embedding failed: {}", e),
         }
     });
 
@@ -59,14 +77,47 @@ pub async fn chat(query: String, db: State<'_, Arc<Mutex<Connection>>>) -> Resul
 
     let relevant_notes = {
         let conn = db.lock().map_err(|e| e.to_string())?;
-        let repo = SqliteNoteRepository { conn: &conn };
-        let count = repo.count_with_embeddings().map_err(|e| e.to_string())?;
+        let note_repo = SqliteNoteRepository { conn: &conn };
+        let chunk_repo = crate::repository::chunk_repo::SqliteChunkRepository { conn: &conn };
+        let count = crate::repository::chunk_repo::ChunkRepository::count_chunks_with_embeddings(
+            &chunk_repo,
+        )
+        .map_err(|e| e.to_string())?;
+
         if count >= 3 {
-            retrieval_svc
-                .semantic_search_with_embedding(&query_embedding, &repo)
+            let all_chunks =
+                crate::repository::chunk_repo::ChunkRepository::get_all_chunks_with_embeddings(
+                    &chunk_repo,
+                )
+                .map_err(|e| e.to_string())?;
+
+            let mut scored: Vec<(f32, String)> = all_chunks
+                .iter()
+                .filter_map(|c| {
+                    c.embedding.as_ref().map(|v| {
+                        let sim = EmbeddingService::cosine_similarity(&query_embedding.vector, v);
+                        (sim, c.note_id.clone())
+                    })
+                })
+                .collect();
+
+            scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+            scored.dedup_by_key(|s| s.1.clone());
+            scored.truncate(5);
+
+            let top_note_ids: Vec<String> = scored
+                .into_iter()
+                .filter(|(score, _)| *score > 0.3)
+                .map(|(_, id)| id)
+                .collect();
+
+            note_repo
+                .get_notes_by_ids(&top_note_ids)
                 .map_err(|e| e.to_string())?
         } else {
-            repo.search_fulltext(&query).map_err(|e| e.to_string())?
+            note_repo
+                .search_fulltext(&query)
+                .map_err(|e| e.to_string())?
         }
     };
 
@@ -132,9 +183,30 @@ pub async fn generate_insights(
         let conn = db.lock().map_err(|e| e.to_string())?;
         let note_repo = SqliteNoteRepository { conn: &conn };
         let insight_repo = SqliteInsightRepository { conn: &conn };
-        let embeddings = note_repo.get_all_embeddings().map_err(|e| e.to_string())?;
+        let chunk_repo = crate::repository::chunk_repo::SqliteChunkRepository { conn: &conn };
+
+        // Use chunk embeddings instead of note embeddings
+        let chunks =
+            crate::repository::chunk_repo::ChunkRepository::get_all_chunks_with_embeddings(
+                &chunk_repo,
+            )
+            .map_err(|e| e.to_string())?;
+
+        let embeddings: Vec<crate::models::Embedding> = chunks
+            .iter()
+            .filter_map(|c| {
+                c.embedding.as_ref().map(|v| crate::models::Embedding {
+                    note_id: c.note_id.clone(),
+                    vector: v.clone(),
+                    model: "nomic-embed-text".to_string(),
+                    created_at: c.created_at.clone(),
+                })
+            })
+            .collect();
+
         let existing = crate::repository::insight_repo::InsightRepository::get_all(&insight_repo)
             .map_err(|e| e.to_string())?;
+
         (embeddings, existing)
     };
 
@@ -166,10 +238,10 @@ pub async fn generate_insights(
         match insight_svc.generate_insight_text(&notes).await {
             Ok((title, body)) => {
                 let insight = Insight {
-                    id: uuid::Uuid::new_v4().to_string(),
+                    id: Uuid::new_v4().to_string(),
                     title,
                     body,
-                    created_at: chrono::Utc::now().to_rfc3339(),
+                    created_at: Utc::now().to_rfc3339(),
                     note_ids: cluster_ids,
                 };
                 let conn = db.lock().map_err(|e| e.to_string())?;
