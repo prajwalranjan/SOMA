@@ -14,7 +14,18 @@ pub fn init_db(db_path: &Path) -> Result<Connection> {
             thought_at TEXT NOT NULL,
             logged_at TEXT NOT NULL,
             sentiment TEXT,
-            embedding_ref TEXT
+            embedding_ref TEXT,
+            content_type TEXT DEFAULT 'thought'
+        );
+
+        CREATE TABLE IF NOT EXISTS note_chunks (
+            id TEXT PRIMARY KEY,
+            note_id TEXT NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            embedding TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE
         );
 
         CREATE TABLE IF NOT EXISTS insights (

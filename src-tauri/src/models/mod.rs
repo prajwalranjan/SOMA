@@ -7,3 +7,5 @@ pub use embedding::Embedding;
 pub use insight::Insight;
 pub use message::ChatMessage;
 pub use note::Note;
+pub mod chunk;
+pub use chunk::NoteChunk;
