@@ -2,7 +2,7 @@ use crate::models::{ChatMessage, Insight, Note};
 use crate::repository::insight_repo::SqliteInsightRepository;
 use crate::repository::note_repo::NoteRepository;
 use crate::repository::note_repo::SqliteNoteRepository;
-use crate::services::{ChatService, EmbeddingService, InsightService, RetrievalService};
+use crate::services::{ChatService, EmbeddingService, InsightService};
 use chrono::Utc;
 use rusqlite::Connection;
 use std::sync::{Arc, Mutex};
@@ -127,7 +127,6 @@ pub fn get_notes(db: State<'_, Arc<Mutex<Connection>>>) -> Result<Vec<Note>, Str
 pub async fn chat(query: String, db: State<'_, Arc<Mutex<Connection>>>) -> Result<String, String> {
     println!("chat command called with query: {}", query);
     let embedding_svc = EmbeddingService::new();
-    let retrieval_svc = RetrievalService::new();
     let chat_svc = ChatService::new();
 
     println!("about to generate query embedding");
@@ -303,7 +302,6 @@ pub async fn generate_insights(
 
     let (embeddings, existing_insights) = {
         let conn = db.lock().map_err(|e| e.to_string())?;
-        let note_repo = SqliteNoteRepository { conn: &conn };
         let insight_repo = SqliteInsightRepository { conn: &conn };
         let chunk_repo = crate::repository::chunk_repo::SqliteChunkRepository { conn: &conn };
 
@@ -385,7 +383,7 @@ pub async fn generate_insights(
 #[tauri::command]
 pub async fn check_ollama() -> Result<bool, String> {
     let client = reqwest::Client::new();
-    match client.get("http://localhost:11434/api/tags").send().await {
+    match client.get("http://127.0.0.1:11434/api/tags").send().await {
         Ok(res) => {
             let text = res.text().await.unwrap_or_default();
             Ok(text.contains("nomic-embed-text") && text.contains("phi3"))

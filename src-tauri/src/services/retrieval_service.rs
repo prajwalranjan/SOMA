@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::models::{Embedding, Note};
 use crate::repository::note_repo::NoteRepository;
 use crate::services::embedding_service::EmbeddingService;

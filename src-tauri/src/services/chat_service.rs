@@ -40,11 +40,10 @@ impl ChatService {
     }
 
     pub async fn respond(&self, query: &str, context_notes: &[Note]) -> Result<String> {
-        // replace the format!(...) system prompt with:
         let system_prompt = PromptBuilder::chat_system_prompt(context_notes);
 
         let client = reqwest::Client::new();
-        let res = client
+        let response = client
             .post(format!("{}/api/chat", self.ollama_url))
             .json(&ChatRequest {
                 model: self.model.clone(),
@@ -61,10 +60,25 @@ impl ChatService {
                 stream: false,
             })
             .send()
-            .await?
-            .json::<ChatResponse>()
             .await?;
 
-        Ok(res.message.content)
+        let status = response.status();
+        let body = response.text().await?;
+        eprintln!(
+            "[SOMA] /api/chat response: status={} body={}",
+            status,
+            &body[..body.len().min(500)]
+        );
+
+        let parsed = serde_json::from_str::<ChatResponse>(&body).map_err(|e| {
+            anyhow::anyhow!(
+                "Ollama /api/chat parse error (HTTP {}): {} — raw body: {}",
+                status,
+                e,
+                &body[..body.len().min(500)]
+            )
+        })?;
+
+        Ok(parsed.message.content)
     }
 }

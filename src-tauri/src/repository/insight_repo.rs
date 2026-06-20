@@ -5,7 +5,6 @@ use rusqlite::Connection;
 pub trait InsightRepository {
     fn save(&self, insight: &Insight, note_ids_json: &str) -> Result<()>;
     fn get_all(&self) -> Result<Vec<Insight>>;
-    fn exists(&self, note_ids_json: &str) -> Result<bool>;
 }
 
 pub struct SqliteInsightRepository<'a> {
@@ -60,12 +59,4 @@ impl<'a> InsightRepository for SqliteInsightRepository<'a> {
         Ok(insights)
     }
 
-    fn exists(&self, note_ids_json: &str) -> Result<bool> {
-        let count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM insights WHERE note_ids = ?1",
-            rusqlite::params![note_ids_json],
-            |row| row.get(0),
-        )?;
-        Ok(count > 0)
-    }
 }
