@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useChat } from "../hooks/useChat";
 import { useSessions } from "../hooks/useSessions";
 
@@ -15,6 +15,11 @@ export function ChatPage() {
     const [input, setInput] = useState("");
     const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
     const [editName, setEditName] = useState("");
+    const bottomRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    }, [messages, loading, error]);
 
     async function handleSend() {
         if (!input.trim() || !activeSessionId) return;
@@ -187,10 +192,11 @@ export function ChatPage() {
                     {error && (
                         <div style={{ display: "flex", justifyContent: "flex-start" }}>
                             <div style={{ padding: "12px 16px", borderRadius: "16px 16px 16px 4px", background: "#3a1a1a", border: "1px solid #f87171", color: "#f87171", fontSize: "13px" }}>
-                                Something went wrong. Please try again.
+                                Something went wrong — please try again.
                             </div>
                         </div>
                     )}
+                    <div ref={bottomRef} />
                 </div>
 
                 <div style={{ padding: "16px 32px", borderTop: "1px solid var(--border)", display: "flex", gap: "12px", flexShrink: 0 }}>
