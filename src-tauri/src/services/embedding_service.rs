@@ -23,7 +23,7 @@ impl EmbeddingService {
     pub fn new() -> Self {
         Self {
             model: "nomic-embed-text".to_string(),
-            ollama_url: "http://localhost:11434".to_string(),
+            ollama_url: "http://127.0.0.1:11434".to_string(),
         }
     }
 

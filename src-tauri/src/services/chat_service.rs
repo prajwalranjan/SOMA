@@ -35,7 +35,7 @@ impl ChatService {
     pub fn new() -> Self {
         Self {
             model: "phi3:mini".to_string(),
-            ollama_url: "http://localhost:11434".to_string(),
+            ollama_url: "http://127.0.0.1:11434".to_string(),
         }
     }
 
