@@ -4,7 +4,6 @@ use chrono::Utc;
 use rusqlite::Connection;
 use uuid::Uuid;
 
-// The trait — defines what operations are possible, not how
 pub trait NoteRepository {
     fn create(&self, content: &str, thought_at: Option<String>) -> Result<Note>;
     fn get_all(&self) -> Result<Vec<Note>>;
@@ -13,9 +12,11 @@ pub trait NoteRepository {
     fn get_all_embeddings(&self) -> Result<Vec<Embedding>>;
     fn get_notes_by_ids(&self, ids: &[String]) -> Result<Vec<Note>>;
     fn count_with_embeddings(&self) -> Result<usize>;
+    fn update(&self, id: &str, content: &str, thought_at: Option<String>) -> Result<Note>;
+    fn delete(&self, id: &str) -> Result<()>;
+    fn get_by_id(&self, id: &str) -> Result<Option<Note>>;
 }
 
-// The SQLite implementation
 pub struct SqliteNoteRepository<'a> {
     pub conn: &'a Connection,
 }
@@ -171,5 +172,55 @@ impl<'a> NoteRepository for SqliteNoteRepository<'a> {
             |row| row.get(0),
         )?;
         Ok(count)
+    }
+
+    fn update(&self, id: &str, content: &str, thought_at: Option<String>) -> Result<Note> {
+        let existing = self
+            .get_by_id(id)?
+            .ok_or_else(|| anyhow::anyhow!("Note not found"))?;
+
+        let thought_at = thought_at.unwrap_or(existing.thought_at);
+
+        // Clear embedding_ref since content changed — will be regenerated
+        self.conn.execute(
+            "UPDATE notes SET content = ?1, thought_at = ?2, embedding_ref = NULL WHERE id = ?3",
+            rusqlite::params![content, thought_at, id],
+        )?;
+
+        Ok(Note {
+            id: id.to_string(),
+            content: content.to_string(),
+            thought_at,
+            logged_at: existing.logged_at,
+            sentiment: None,
+        })
+    }
+
+    fn delete(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM notes WHERE id = ?1", rusqlite::params![id])?;
+        Ok(())
+    }
+
+    fn get_by_id(&self, id: &str) -> Result<Option<Note>> {
+        let result = self.conn.query_row(
+            "SELECT id, content, thought_at, logged_at, sentiment FROM notes WHERE id = ?1",
+            rusqlite::params![id],
+            |row| {
+                Ok(Note {
+                    id: row.get(0)?,
+                    content: row.get(1)?,
+                    thought_at: row.get(2)?,
+                    logged_at: row.get(3)?,
+                    sentiment: row.get(4)?,
+                })
+            },
+        );
+
+        match result {
+            Ok(note) => Ok(Some(note)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 }
