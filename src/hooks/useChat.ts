@@ -1,39 +1,66 @@
 import { useState, useEffect } from "react";
 import { ChatMessage } from "../lib/types";
 import { invoke } from "@tauri-apps/api/core";
-import { saveMessage, getChatHistory } from "../lib/tauri";
 
-export function useChat() {
+export function useChat(sessionId: string | null) {
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
-        getChatHistory().then(setMessages).catch(console.error);
-    }, []);
+        if (sessionId) {
+            loadHistory(sessionId);
+        } else {
+            setMessages([]);
+        }
+    }, [sessionId]);
+
+    async function loadHistory(id: string) {
+        try {
+            const history = await invoke<ChatMessage[]>("get_chat_history", { sessionId: id });
+            setMessages(history);
+        } catch (e) {
+            console.error(e);
+        }
+    }
 
     async function sendMessage(content: string) {
+        if (!sessionId) return;
+
         const userMessage: ChatMessage = {
+            session_id: sessionId,
             role: "user",
             content,
             timestamp: new Date().toISOString(),
         };
 
         setMessages((prev) => [...prev, userMessage]);
-        await saveMessage("user", content, userMessage.timestamp);
+        await invoke("save_message", {
+            sessionId,
+            role: "user",
+            content,
+            timestamp: userMessage.timestamp,
+        });
         setLoading(true);
+        setError(null);
 
         try {
             const response = await invoke<string>("chat", { query: content });
 
             const assistantMessage: ChatMessage = {
+                session_id: sessionId,
                 role: "assistant",
                 content: response,
                 timestamp: new Date().toISOString(),
             };
 
             setMessages((prev) => [...prev, assistantMessage]);
-            await saveMessage("assistant", response, assistantMessage.timestamp);
+            await invoke("save_message", {
+                sessionId,
+                role: "assistant",
+                content: response,
+                timestamp: assistantMessage.timestamp,
+            });
         } catch (e) {
             setError(String(e));
         } finally {
@@ -41,9 +68,5 @@ export function useChat() {
         }
     }
 
-    function clearChat() {
-        setMessages([]);
-    }
-
-    return { messages, loading, error, sendMessage, clearChat };
+    return { messages, loading, error, sendMessage };
 }

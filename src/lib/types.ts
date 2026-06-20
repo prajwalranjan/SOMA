@@ -16,7 +16,15 @@ export interface Insight {
 }
 
 export interface ChatMessage {
+    session_id: string;
     role: "user" | "assistant";
     content: string;
     timestamp: string;
+}
+
+export interface ChatSession {
+    id: string;
+    name: string;
+    created_at: string;
+    updated_at: string;
 }

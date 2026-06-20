@@ -27,7 +27,6 @@ pub fn run() {
             crate::scheduler::start_scheduler(conn.clone());
             app.manage(conn);
 
-            // Start Ollama if not already running
             let ollama_running = std::process::Command::new("ollama")
                 .arg("list")
                 .output()
@@ -35,9 +34,6 @@ pub fn run() {
                 .unwrap_or(false);
 
             if !ollama_running {
-                // CPU-only — MX450-class 2GB GPUs are unreliable for phi3:mini inference,
-                // CUDA_VISIBLE_DEVICES is not sufficient on Windows; OLLAMA_LLM_LIBRARY=cpu
-                // forces the CPU backend at discovery time, avoiding CUDA OOM/crash.
                 if let Ok(_) = std::process::Command::new("ollama")
                     .arg("serve")
                     .env("OLLAMA_LLM_LIBRARY", "cpu")
@@ -53,7 +49,7 @@ pub fn run() {
 
             Ok(())
         })
-        .on_window_event(|window, event| {
+        .on_window_event(|_window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 if SOMA_OWNS_OLLAMA.load(Ordering::SeqCst) {
                     println!("SOMA shutting down Ollama...");
@@ -65,15 +61,19 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::add_note,
+            commands::update_note,
+            commands::delete_note,
             commands::get_notes,
             commands::chat,
+            commands::create_session,
+            commands::get_sessions,
+            commands::rename_session,
+            commands::delete_session,
             commands::save_message,
             commands::get_chat_history,
             commands::get_insights,
             commands::generate_insights,
             commands::check_ollama,
-            commands::update_note,
-            commands::delete_note,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
