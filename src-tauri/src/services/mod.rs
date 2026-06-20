@@ -1,6 +1,7 @@
 pub mod chat_service;
 pub mod embedding_service;
 pub mod insight_service;
+pub mod ollama_client;
 pub mod retrieval_service;
 
 pub use chat_service::ChatService;

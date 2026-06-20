@@ -5,6 +5,7 @@ use rusqlite::Connection;
 pub trait ChunkRepository {
     fn save_chunks(&self, chunks: &[NoteChunk]) -> Result<()>;
     fn get_all_chunks_with_embeddings(&self) -> Result<Vec<NoteChunk>>;
+    fn get_chunks_without_embeddings(&self) -> Result<Vec<NoteChunk>>;
     fn update_embedding(&self, chunk_id: &str, embedding: &[f32]) -> Result<()>;
     fn delete_chunks_for_note(&self, note_id: &str) -> Result<()>;
     fn count_chunks_with_embeddings(&self) -> Result<usize>;
@@ -68,6 +69,36 @@ impl<'a> ChunkRepository for SqliteChunkRepository<'a> {
                     }
                 },
             )
+            .collect();
+
+        Ok(chunks)
+    }
+
+    fn get_chunks_without_embeddings(&self) -> Result<Vec<NoteChunk>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, note_id, chunk_index, content, created_at
+             FROM note_chunks WHERE embedding IS NULL",
+        )?;
+
+        let chunks = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, usize>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .map(|(id, note_id, chunk_index, content, created_at)| NoteChunk {
+                id,
+                note_id,
+                chunk_index,
+                content,
+                embedding: None,
+                created_at,
+            })
             .collect();
 
         Ok(chunks)
