@@ -35,13 +35,20 @@ pub fn run() {
                 .unwrap_or(false);
 
             if !ollama_running {
-                if let Ok(_) = std::process::Command::new("ollama").arg("serve").spawn() {
+                // CPU-only — MX450-class 2GB GPUs are unreliable for phi3:mini inference,
+                // CUDA_VISIBLE_DEVICES is not sufficient on Windows; OLLAMA_LLM_LIBRARY=cpu
+                // forces the CPU backend at discovery time, avoiding CUDA OOM/crash.
+                if let Ok(_) = std::process::Command::new("ollama")
+                    .arg("serve")
+                    .env("OLLAMA_LLM_LIBRARY", "cpu")
+                    .spawn()
+                {
                     SOMA_OWNS_OLLAMA.store(true, Ordering::SeqCst);
-                    println!("SOMA started Ollama");
+                    println!("SOMA started Ollama (CPU-only)");
                     std::thread::sleep(std::time::Duration::from_secs(2));
                 }
             } else {
-                println!("Ollama already running — not owned by SOMA");
+                println!("Ollama already running — not owned by SOMA (CPU-only mode not enforced)");
             }
 
             Ok(())
@@ -65,6 +72,8 @@ pub fn run() {
             commands::get_insights,
             commands::generate_insights,
             commands::check_ollama,
+            commands::update_note,
+            commands::delete_note,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

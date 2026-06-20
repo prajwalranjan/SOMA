@@ -66,23 +66,32 @@ pub fn get_notes(db: State<'_, Arc<Mutex<Connection>>>) -> Result<Vec<Note>, Str
 
 #[tauri::command]
 pub async fn chat(query: String, db: State<'_, Arc<Mutex<Connection>>>) -> Result<String, String> {
+    println!("chat command called with query: {}", query);
     let embedding_svc = EmbeddingService::new();
     let retrieval_svc = RetrievalService::new();
     let chat_svc = ChatService::new();
 
+    println!("about to generate query embedding");
     let query_embedding = embedding_svc
         .generate("query", &query)
         .await
         .map_err(|e| e.to_string())?;
 
+    println!(
+        "query embedding generated, len: {}",
+        query_embedding.vector.len()
+    );
+
     let relevant_notes = {
         let conn = db.lock().map_err(|e| e.to_string())?;
+        println!("got db lock");
         let note_repo = SqliteNoteRepository { conn: &conn };
         let chunk_repo = crate::repository::chunk_repo::SqliteChunkRepository { conn: &conn };
         let count = crate::repository::chunk_repo::ChunkRepository::count_chunks_with_embeddings(
             &chunk_repo,
         )
         .map_err(|e| e.to_string())?;
+        println!("chunk count: {}", count);
 
         if count >= 3 {
             let all_chunks =
@@ -90,6 +99,7 @@ pub async fn chat(query: String, db: State<'_, Arc<Mutex<Connection>>>) -> Resul
                     &chunk_repo,
                 )
                 .map_err(|e| e.to_string())?;
+            println!("fetched {} chunks", all_chunks.len());
 
             let mut scored: Vec<(f32, String)> = all_chunks
                 .iter()
@@ -100,31 +110,42 @@ pub async fn chat(query: String, db: State<'_, Arc<Mutex<Connection>>>) -> Resul
                     })
                 })
                 .collect();
+            println!("scored {} chunks", scored.len());
 
             scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
             scored.dedup_by_key(|s| s.1.clone());
             scored.truncate(5);
+            println!("after dedup/truncate: {} candidates", scored.len());
 
             let top_note_ids: Vec<String> = scored
                 .into_iter()
                 .filter(|(score, _)| *score > 0.3)
                 .map(|(_, id)| id)
                 .collect();
+            println!("top note ids: {:?}", top_note_ids);
 
             note_repo
                 .get_notes_by_ids(&top_note_ids)
                 .map_err(|e| e.to_string())?
         } else {
+            println!("using fulltext search");
             note_repo
                 .search_fulltext(&query)
                 .map_err(|e| e.to_string())?
         }
     };
+    println!("relevant notes fetched: {}", relevant_notes.len());
 
-    chat_svc
+    println!("calling chat_svc.respond");
+    let result = chat_svc
         .respond(&query, &relevant_notes)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| {
+            println!("chat_svc.respond error: {}", e);
+            e.to_string()
+        });
+    println!("chat_svc.respond returned ok: {:?}", result.is_ok());
+    result
 }
 
 #[tauri::command]
@@ -271,4 +292,66 @@ pub async fn check_ollama() -> Result<bool, String> {
         }
         Err(_) => Ok(false),
     }
+}
+
+#[tauri::command]
+pub async fn update_note(
+    id: String,
+    content: String,
+    thought_at: Option<String>,
+    db: State<'_, Arc<Mutex<Connection>>>,
+) -> Result<Note, String> {
+    let note = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        let repo = SqliteNoteRepository { conn: &conn };
+        repo.update(&id, &content, thought_at)
+            .map_err(|e| e.to_string())?
+    };
+
+    // Delete old chunks, create new ones, re-embed in background
+    {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        let chunk_repo = crate::repository::chunk_repo::SqliteChunkRepository { conn: &conn };
+        crate::repository::chunk_repo::ChunkRepository::delete_chunks_for_note(&chunk_repo, &id)
+            .map_err(|e| e.to_string())?;
+    }
+
+    let chunking_svc = crate::services::ChunkingService::new();
+    let chunks = chunking_svc.chunk(&note.id, &content);
+
+    {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        let chunk_repo = crate::repository::chunk_repo::SqliteChunkRepository { conn: &conn };
+        crate::repository::chunk_repo::ChunkRepository::save_chunks(&chunk_repo, &chunks)
+            .map_err(|e| e.to_string())?;
+    }
+
+    let db_clone = db.inner().clone();
+    tokio::spawn(async move {
+        let svc = EmbeddingService::new();
+        for chunk in &chunks {
+            match svc.generate(&chunk.id, &chunk.content).await {
+                Ok(embedding) => {
+                    let conn = db_clone.lock().unwrap();
+                    let chunk_repo =
+                        crate::repository::chunk_repo::SqliteChunkRepository { conn: &conn };
+                    let _ = crate::repository::chunk_repo::ChunkRepository::update_embedding(
+                        &chunk_repo,
+                        &chunk.id,
+                        &embedding.vector,
+                    );
+                }
+                Err(e) => eprintln!("Chunk embedding failed: {}", e),
+            }
+        }
+    });
+
+    Ok(note)
+}
+
+#[tauri::command]
+pub fn delete_note(id: String, db: State<'_, Arc<Mutex<Connection>>>) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let repo = SqliteNoteRepository { conn: &conn };
+    repo.delete(&id).map_err(|e| e.to_string())
 }
