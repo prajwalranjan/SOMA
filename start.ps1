@@ -11,10 +11,32 @@ if ($ollamaProcesses) {
     Write-Host "Stopped." -ForegroundColor Green
 }
 
-# Start fresh Ollama instance — CPU only, GPU (MX450, 2GB VRAM) is too small for reliable inference
-Write-Host "Starting Ollama (CPU-only)..." -ForegroundColor Yellow
+# Detect free VRAM and decide CPU vs GPU inference
+$VRAM_THRESHOLD_MB = 4096
+$freeVramMB = $null
+
+try {
+    $nvsmiOut = & nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits 2>$null
+    if ($LASTEXITCODE -eq 0 -and $nvsmiOut) {
+        $freeVramMB = [int]($nvsmiOut.Trim().Split("`n")[0].Trim())
+    }
+} catch {}
+
 $env:OLLAMA_MODELS = "D:\ollama-models"
-$env:OLLAMA_LLM_LIBRARY = "cpu"
+
+if ($null -eq $freeVramMB) {
+    Write-Host "nvidia-smi not available — letting Ollama decide GPU/CPU mode" -ForegroundColor Yellow
+    $ollamaMode = "default"
+} elseif ($freeVramMB -lt $VRAM_THRESHOLD_MB) {
+    Write-Host "Detected ${freeVramMB}MB free VRAM, below ${VRAM_THRESHOLD_MB}MB threshold — forcing CPU-only inference" -ForegroundColor Yellow
+    $env:OLLAMA_LLM_LIBRARY = "cpu"
+    $ollamaMode = "CPU-only"
+} else {
+    Write-Host "Detected ${freeVramMB}MB free VRAM — allowing GPU inference" -ForegroundColor Green
+    $ollamaMode = "GPU"
+}
+
+Write-Host "Starting Ollama ($ollamaMode)..." -ForegroundColor Yellow
 Start-Process -FilePath "ollama" -ArgumentList "serve" -WindowStyle Hidden
 Start-Sleep -Seconds 3
 Write-Host "Ollama started." -ForegroundColor Green
