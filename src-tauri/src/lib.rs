@@ -10,6 +10,22 @@ use tauri::Manager;
 
 static SOMA_OWNS_OLLAMA: AtomicBool = AtomicBool::new(false);
 
+/// Returns free VRAM in MB from the first NVIDIA GPU, or None if nvidia-smi is
+/// unavailable (non-NVIDIA hardware, macOS, AMD, etc.).
+fn detect_free_vram_mb() -> Option<u64> {
+    let output = std::process::Command::new("nvidia-smi")
+        .args(["--query-gpu=memory.free", "--format=csv,noheader,nounits"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    stdout.lines().next()?.trim().parse::<u64>().ok()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -34,17 +50,45 @@ pub fn run() {
                 .unwrap_or(false);
 
             if !ollama_running {
-                if let Ok(_) = std::process::Command::new("ollama")
-                    .arg("serve")
-                    .env("OLLAMA_LLM_LIBRARY", "cpu")
-                    .spawn()
-                {
+                const VRAM_THRESHOLD_MB: u64 = 4096;
+
+                let force_cpu = match detect_free_vram_mb() {
+                    Some(free_mb) if free_mb >= VRAM_THRESHOLD_MB => {
+                        eprintln!(
+                            "[SOMA] Detected {}MB free VRAM — allowing GPU inference",
+                            free_mb
+                        );
+                        false
+                    }
+                    Some(free_mb) => {
+                        eprintln!(
+                            "[SOMA] Detected {}MB free VRAM, below {}MB threshold — forcing CPU-only inference",
+                            free_mb, VRAM_THRESHOLD_MB
+                        );
+                        true
+                    }
+                    None => {
+                        eprintln!(
+                            "[SOMA] nvidia-smi not available (non-NVIDIA or unsupported platform) — letting Ollama decide GPU/CPU mode"
+                        );
+                        false
+                    }
+                };
+
+                let mut cmd = std::process::Command::new("ollama");
+                cmd.arg("serve");
+                if force_cpu {
+                    cmd.env("OLLAMA_LLM_LIBRARY", "cpu");
+                }
+
+                if let Ok(_) = cmd.spawn() {
                     SOMA_OWNS_OLLAMA.store(true, Ordering::SeqCst);
-                    println!("SOMA started Ollama (CPU-only)");
+                    let mode = if force_cpu { "CPU-only" } else { "GPU" };
+                    eprintln!("[SOMA] Started Ollama ({})", mode);
                     std::thread::sleep(std::time::Duration::from_secs(2));
                 }
             } else {
-                println!("Ollama already running — not owned by SOMA (CPU-only mode not enforced)");
+                eprintln!("[SOMA] Ollama already running — not owned by SOMA");
             }
 
             Ok(())

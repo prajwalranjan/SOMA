@@ -35,16 +35,17 @@ export function useChat(sessionId: string | null) {
         };
 
         setMessages((prev) => [...prev, userMessage]);
-        await invoke("save_message", {
-            sessionId,
-            role: "user",
-            content,
-            timestamp: userMessage.timestamp,
-        });
         setLoading(true);
         setError(null);
 
         try {
+            await invoke("save_message", {
+                sessionId,
+                role: "user",
+                content,
+                timestamp: userMessage.timestamp,
+            });
+
             const response = await invoke<string>("chat", { query: content });
 
             const assistantMessage: ChatMessage = {
@@ -62,6 +63,7 @@ export function useChat(sessionId: string | null) {
                 timestamp: assistantMessage.timestamp,
             });
         } catch (e) {
+            console.error("sendMessage failed:", e);
             setError(String(e));
         } finally {
             setLoading(false);
