@@ -1,13 +1,16 @@
-use crate::services::embedding_service::EmbeddingService;
+use crate::services::embedding_service::cosine_similarity;
+use crate::services::ollama_client::{Message, OllamaApi, OllamaClient};
 use crate::services::prompt_builder::PromptBuilder;
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
 
 const MIN_POINTS: usize = 2;
 
 fn compute_adaptive_epsilon(embeddings: &[crate::models::Embedding]) -> f32 {
     if embeddings.len() < 6 {
-        return 0.4;
+        // Too few pairs for a meaningful mean/median calculation.
+        // Use the permissive end of the adaptive range (similarity >= 0.4)
+        // so loosely related notes can still cluster.
+        return 0.6;
     }
 
     let mut similarities: Vec<f32> = vec![];
@@ -15,7 +18,7 @@ fn compute_adaptive_epsilon(embeddings: &[crate::models::Embedding]) -> f32 {
     for i in 0..embeddings.len() {
         for j in (i + 1)..embeddings.len() {
             let sim =
-                EmbeddingService::cosine_similarity(&embeddings[i].vector, &embeddings[j].vector);
+                cosine_similarity(&embeddings[i].vector, &embeddings[j].vector);
             similarities.push(sim);
         }
     }
@@ -35,40 +38,20 @@ fn compute_adaptive_epsilon(embeddings: &[crate::models::Embedding]) -> f32 {
     epsilon.clamp(0.3, 0.6)
 }
 
-#[derive(Serialize)]
-struct OllamaMessage {
-    role: String,
-    content: String,
-}
-
-#[derive(Serialize)]
-struct ChatRequest {
-    model: String,
-    messages: Vec<OllamaMessage>,
-    stream: bool,
-}
-
-#[derive(Deserialize)]
-struct ChatResponse {
-    message: OllamaMessageResponse,
-}
-
-#[derive(Deserialize)]
-struct OllamaMessageResponse {
-    content: String,
-}
-
-pub struct InsightService {
+pub struct InsightService<C: OllamaApi = OllamaClient> {
     pub model: String,
-    pub ollama_url: String,
+    client: C,
 }
 
 impl InsightService {
     pub fn new() -> Self {
-        Self {
-            model: "phi3:mini".to_string(),
-            ollama_url: "http://localhost:11434".to_string(),
-        }
+        Self { model: "phi3:mini".to_string(), client: OllamaClient::new() }
+    }
+}
+
+impl<C: OllamaApi> InsightService<C> {
+    pub fn with_client(model: impl Into<String>, client: C) -> Self {
+        Self { model: model.into(), client }
     }
 
     pub fn cluster_embeddings(&self, embeddings: &[crate::models::Embedding]) -> Vec<Vec<String>> {
@@ -119,10 +102,7 @@ impl InsightService {
             }
         }
 
-        clusters
-            .into_iter()
-            .filter(|c| c.len() >= MIN_POINTS)
-            .collect()
+        clusters.into_iter().filter(|c| c.len() >= MIN_POINTS).collect()
     }
 
     fn region_query(
@@ -138,7 +118,7 @@ impl InsightService {
                 if *j == idx {
                     return false;
                 }
-                let sim = EmbeddingService::cosine_similarity(&embeddings[idx].vector, &emb.vector);
+                let sim = cosine_similarity(&embeddings[idx].vector, &emb.vector);
                 (1.0 - sim) <= epsilon
             })
             .map(|(j, _)| j)
@@ -150,24 +130,13 @@ impl InsightService {
         notes: &[crate::models::Note],
     ) -> Result<(String, String)> {
         let prompt = PromptBuilder::insight_prompt(notes);
-
-        let client = reqwest::Client::new();
-        let res = client
-            .post(format!("{}/api/chat", self.ollama_url))
-            .json(&ChatRequest {
-                model: self.model.clone(),
-                messages: vec![OllamaMessage {
-                    role: "user".to_string(),
-                    content: prompt,
-                }],
-                stream: false,
-            })
-            .send()
-            .await?
-            .json::<ChatResponse>()
+        let response = self
+            .client
+            .chat(
+                &self.model,
+                vec![Message { role: "user".to_string(), content: prompt }],
+            )
             .await?;
-
-        let response = res.message.content;
 
         let title = response
             .lines()

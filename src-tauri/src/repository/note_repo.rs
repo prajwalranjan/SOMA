@@ -8,9 +8,13 @@ pub trait NoteRepository {
     fn create(&self, content: &str, thought_at: Option<String>) -> Result<Note>;
     fn get_all(&self) -> Result<Vec<Note>>;
     fn search_fulltext(&self, query: &str) -> Result<Vec<Note>>;
+    #[allow(dead_code)]
     fn store_embedding(&self, embedding: &Embedding) -> Result<()>;
+    #[allow(dead_code)]
     fn get_all_embeddings(&self) -> Result<Vec<Embedding>>;
+    #[allow(dead_code)]
     fn get_notes_by_ids(&self, ids: &[String]) -> Result<Vec<Note>>;
+    #[allow(dead_code)]
     fn count_with_embeddings(&self) -> Result<usize>;
     fn update(&self, id: &str, content: &str, thought_at: Option<String>) -> Result<Note>;
     fn delete(&self, id: &str) -> Result<()>;

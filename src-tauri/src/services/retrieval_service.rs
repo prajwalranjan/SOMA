@@ -1,6 +1,8 @@
+#![allow(dead_code)]
+
 use crate::models::{Embedding, Note};
 use crate::repository::note_repo::NoteRepository;
-use crate::services::embedding_service::EmbeddingService;
+use crate::services::embedding_service::cosine_similarity;
 use anyhow::Result;
 
 const TOP_K: usize = 5;
@@ -31,7 +33,7 @@ impl RetrievalService {
         let mut scored: Vec<(f32, String)> = all_embeddings
             .iter()
             .map(|emb| {
-                let sim = EmbeddingService::cosine_similarity(&query_embedding.vector, &emb.vector);
+                let sim = cosine_similarity(&query_embedding.vector, &emb.vector);
                 (sim, emb.note_id.clone())
             })
             .collect();

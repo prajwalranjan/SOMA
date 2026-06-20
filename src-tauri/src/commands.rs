@@ -2,7 +2,8 @@ use crate::models::{ChatMessage, Insight, Note};
 use crate::repository::insight_repo::SqliteInsightRepository;
 use crate::repository::note_repo::NoteRepository;
 use crate::repository::note_repo::SqliteNoteRepository;
-use crate::services::{ChatService, EmbeddingService, InsightService, RetrievalService};
+use crate::services::embedding_service::{cosine_similarity, EmbeddingService};
+use crate::services::{ChatService, InsightService};
 use chrono::Utc;
 use rusqlite::Connection;
 use std::sync::{Arc, Mutex};
@@ -127,7 +128,6 @@ pub fn get_notes(db: State<'_, Arc<Mutex<Connection>>>) -> Result<Vec<Note>, Str
 pub async fn chat(query: String, db: State<'_, Arc<Mutex<Connection>>>) -> Result<String, String> {
     println!("chat command called with query: {}", query);
     let embedding_svc = EmbeddingService::new();
-    let retrieval_svc = RetrievalService::new();
     let chat_svc = ChatService::new();
 
     println!("about to generate query embedding");
@@ -164,7 +164,7 @@ pub async fn chat(query: String, db: State<'_, Arc<Mutex<Connection>>>) -> Resul
                 .iter()
                 .filter_map(|c| {
                     c.embedding.as_ref().map(|v| {
-                        let sim = EmbeddingService::cosine_similarity(&query_embedding.vector, v);
+                        let sim = cosine_similarity(&query_embedding.vector, v);
                         (sim, c.note_id.clone())
                     })
                 })
@@ -301,9 +301,39 @@ pub async fn generate_insights(
 ) -> Result<Vec<Insight>, String> {
     let insight_svc = InsightService::new();
 
+    // Step 1: backfill embeddings for any chunks that are missing them.
+    // This handles notes that were added before the localhost->127.0.0.1 fix.
+    let chunks_to_embed = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        let chunk_repo = crate::repository::chunk_repo::SqliteChunkRepository { conn: &conn };
+        crate::repository::chunk_repo::ChunkRepository::get_chunks_without_embeddings(&chunk_repo)
+            .map_err(|e| e.to_string())?
+    };
+
+    eprintln!("[SOMA] generate_insights: {} chunks missing embeddings — backfilling", chunks_to_embed.len());
+
+    if !chunks_to_embed.is_empty() {
+        let embedding_svc = EmbeddingService::new();
+        for chunk in &chunks_to_embed {
+            match embedding_svc.generate(&chunk.id, &chunk.content).await {
+                Ok(embedding) => {
+                    let conn = db.lock().map_err(|e| e.to_string())?;
+                    let chunk_repo = crate::repository::chunk_repo::SqliteChunkRepository { conn: &conn };
+                    let _ = crate::repository::chunk_repo::ChunkRepository::update_embedding(
+                        &chunk_repo,
+                        &chunk.id,
+                        &embedding.vector,
+                    );
+                    eprintln!("[SOMA] backfilled embedding for chunk {}", chunk.id);
+                }
+                Err(e) => eprintln!("[SOMA] backfill failed for chunk {}: {}", chunk.id, e),
+            }
+        }
+    }
+
+    // Step 2: load all embeddings, cluster, generate insights.
     let (embeddings, existing_insights) = {
         let conn = db.lock().map_err(|e| e.to_string())?;
-        let note_repo = SqliteNoteRepository { conn: &conn };
         let insight_repo = SqliteInsightRepository { conn: &conn };
         let chunk_repo = crate::repository::chunk_repo::SqliteChunkRepository { conn: &conn };
 
@@ -328,10 +358,13 @@ pub async fn generate_insights(
         let existing = crate::repository::insight_repo::InsightRepository::get_all(&insight_repo)
             .map_err(|e| e.to_string())?;
 
+        eprintln!("[SOMA] generate_insights: {} embeddings loaded, {} existing insights", embeddings.len(), existing.len());
+
         (embeddings, existing)
     };
 
     let clusters = insight_svc.cluster_embeddings(&embeddings);
+    eprintln!("[SOMA] generate_insights: {} clusters formed", clusters.len());
     let mut new_insights = vec![];
 
     for cluster_ids in clusters {
@@ -385,7 +418,7 @@ pub async fn generate_insights(
 #[tauri::command]
 pub async fn check_ollama() -> Result<bool, String> {
     let client = reqwest::Client::new();
-    match client.get("http://localhost:11434/api/tags").send().await {
+    match client.get("http://127.0.0.1:11434/api/tags").send().await {
         Ok(res) => {
             let text = res.text().await.unwrap_or_default();
             Ok(text.contains("nomic-embed-text") && text.contains("phi3"))

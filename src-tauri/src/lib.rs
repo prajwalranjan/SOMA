@@ -43,53 +43,54 @@ pub fn run() {
             crate::scheduler::start_scheduler(conn.clone());
             app.manage(conn);
 
-            let ollama_running = std::process::Command::new("ollama")
-                .arg("list")
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false);
+            // Run all Ollama startup work in a background thread so the UI
+            // thread is never blocked by subprocess calls or the post-spawn wait.
+            std::thread::spawn(|| {
+                let ollama_running = std::process::Command::new("ollama")
+                    .arg("list")
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
 
-            if !ollama_running {
-                const VRAM_THRESHOLD_MB: u64 = 4096;
-
-                let force_cpu = match detect_free_vram_mb() {
-                    Some(free_mb) if free_mb >= VRAM_THRESHOLD_MB => {
-                        eprintln!(
-                            "[SOMA] Detected {}MB free VRAM — allowing GPU inference",
+                if !ollama_running {
+                    match detect_free_vram_mb() {
+                        Some(free_mb) => eprintln!(
+                            "[SOMA] Detected {}MB free VRAM - letting Ollama decide GPU/CPU split",
                             free_mb
-                        );
-                        false
+                        ),
+                        None => eprintln!(
+                            "[SOMA] nvidia-smi not available - letting Ollama decide GPU/CPU mode"
+                        ),
                     }
-                    Some(free_mb) => {
-                        eprintln!(
-                            "[SOMA] Detected {}MB free VRAM, below {}MB threshold — forcing CPU-only inference",
-                            free_mb, VRAM_THRESHOLD_MB
-                        );
-                        true
-                    }
-                    None => {
-                        eprintln!(
-                            "[SOMA] nvidia-smi not available (non-NVIDIA or unsupported platform) — letting Ollama decide GPU/CPU mode"
-                        );
-                        false
-                    }
-                };
 
-                let mut cmd = std::process::Command::new("ollama");
-                cmd.arg("serve");
-                if force_cpu {
-                    cmd.env("OLLAMA_LLM_LIBRARY", "cpu");
-                }
+                    let mut cmd = std::process::Command::new("ollama");
+                    cmd.arg("serve");
 
-                if let Ok(_) = cmd.spawn() {
-                    SOMA_OWNS_OLLAMA.store(true, Ordering::SeqCst);
-                    let mode = if force_cpu { "CPU-only" } else { "GPU" };
-                    eprintln!("[SOMA] Started Ollama ({})", mode);
-                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    match std::env::var("OLLAMA_MODELS") {
+                        Ok(models_path) => {
+                            cmd.env("OLLAMA_MODELS", &models_path);
+                            eprintln!(
+                                "[SOMA] OLLAMA_MODELS={} (forwarding to ollama serve)",
+                                models_path
+                            );
+                        }
+                        Err(_) => {
+                            eprintln!(
+                                "[SOMA] Warning: OLLAMA_MODELS is not set - Ollama will store \
+                                 model blobs in the default path (~/.ollama)."
+                            );
+                        }
+                    }
+
+                    if cmd.spawn().is_ok() {
+                        SOMA_OWNS_OLLAMA.store(true, Ordering::SeqCst);
+                        eprintln!("[SOMA] Started Ollama");
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                    }
+                } else {
+                    eprintln!("[SOMA] Ollama already running - not owned by SOMA");
                 }
-            } else {
-                eprintln!("[SOMA] Ollama already running — not owned by SOMA");
-            }
+            });
 
             Ok(())
         })
