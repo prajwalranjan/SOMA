@@ -224,3 +224,125 @@ impl<'a> NoteRepository for SqliteNoteRepository<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys=ON;
+            CREATE TABLE notes (
+                id TEXT PRIMARY KEY,
+                content TEXT NOT NULL,
+                thought_at TEXT NOT NULL,
+                logged_at TEXT NOT NULL,
+                sentiment TEXT,
+                embedding_ref TEXT,
+                content_type TEXT DEFAULT 'thought'
+            );
+            CREATE TABLE note_chunks (
+                id TEXT PRIMARY KEY,
+                note_id TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                embedding TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE
+            );",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn create_and_get_note() {
+        let conn = test_conn();
+        let repo = SqliteNoteRepository { conn: &conn };
+
+        let note = repo.create("test content", None).unwrap();
+        assert_eq!(note.content, "test content");
+
+        let fetched = repo.get_by_id(&note.id).unwrap();
+        assert!(fetched.is_some());
+        assert_eq!(fetched.unwrap().content, "test content");
+    }
+
+    #[test]
+    fn update_note_clears_embedding_ref() {
+        let conn = test_conn();
+        let repo = SqliteNoteRepository { conn: &conn };
+
+        let note = repo.create("original", None).unwrap();
+        repo.store_embedding(&Embedding {
+            note_id: note.id.clone(),
+            vector: vec![0.1, 0.2, 0.3],
+            model: "test".to_string(),
+            created_at: "now".to_string(),
+        })
+        .unwrap();
+
+        let count_before = repo.count_with_embeddings().unwrap();
+        assert_eq!(count_before, 1);
+
+        repo.update(&note.id, "updated content", None).unwrap();
+
+        let count_after = repo.count_with_embeddings().unwrap();
+        assert_eq!(
+            count_after, 0,
+            "embedding_ref should clear on content update"
+        );
+    }
+
+    #[test]
+    fn delete_note_cascades_to_chunks() {
+        let conn = test_conn();
+        let repo = SqliteNoteRepository { conn: &conn };
+
+        let note = repo.create("note with chunks", None).unwrap();
+
+        conn.execute(
+            "INSERT INTO note_chunks (id, note_id, chunk_index, content, embedding, created_at)
+             VALUES ('chunk1', ?1, 0, 'chunk content', NULL, 'now')",
+            rusqlite::params![note.id],
+        )
+        .unwrap();
+
+        let chunk_count_before: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM note_chunks WHERE note_id = ?1",
+                rusqlite::params![note.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(chunk_count_before, 1);
+
+        repo.delete(&note.id).unwrap();
+
+        let chunk_count_after: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM note_chunks WHERE note_id = ?1",
+                rusqlite::params![note.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            chunk_count_after, 0,
+            "chunks should cascade delete with parent note"
+        );
+    }
+
+    #[test]
+    fn search_fulltext_finds_matching_notes() {
+        let conn = test_conn();
+        let repo = SqliteNoteRepository { conn: &conn };
+
+        repo.create("i love spicy food", None).unwrap();
+        repo.create("watched a movie last night", None).unwrap();
+
+        let results = repo.search_fulltext("spicy").unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].content.contains("spicy"));
+    }
+}
