@@ -22,7 +22,6 @@ pub async fn add_note(
             .map_err(|e| e.to_string())?
     };
 
-    // Chunk and save chunks
     let chunking_svc = crate::services::ChunkingService::new();
     let chunks = chunking_svc.chunk(&note.id, &content);
 
@@ -33,7 +32,6 @@ pub async fn add_note(
             .map_err(|e| e.to_string())?;
     }
 
-    // Generate embeddings for each chunk in background
     let db_clone = db.inner().clone();
     tokio::spawn(async move {
         let svc = EmbeddingService::new();
@@ -55,6 +53,67 @@ pub async fn add_note(
     });
 
     Ok(note)
+}
+
+#[tauri::command]
+pub async fn update_note(
+    id: String,
+    content: String,
+    thought_at: Option<String>,
+    db: State<'_, Arc<Mutex<Connection>>>,
+) -> Result<Note, String> {
+    let note = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        let repo = SqliteNoteRepository { conn: &conn };
+        repo.update(&id, &content, thought_at)
+            .map_err(|e| e.to_string())?
+    };
+
+    {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        let chunk_repo = crate::repository::chunk_repo::SqliteChunkRepository { conn: &conn };
+        crate::repository::chunk_repo::ChunkRepository::delete_chunks_for_note(&chunk_repo, &id)
+            .map_err(|e| e.to_string())?;
+    }
+
+    let chunking_svc = crate::services::ChunkingService::new();
+    let chunks = chunking_svc.chunk(&note.id, &content);
+
+    {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        let chunk_repo = crate::repository::chunk_repo::SqliteChunkRepository { conn: &conn };
+        crate::repository::chunk_repo::ChunkRepository::save_chunks(&chunk_repo, &chunks)
+            .map_err(|e| e.to_string())?;
+    }
+
+    let db_clone = db.inner().clone();
+    tokio::spawn(async move {
+        let svc = EmbeddingService::new();
+        for chunk in &chunks {
+            match svc.generate(&chunk.id, &chunk.content).await {
+                Ok(embedding) => {
+                    let conn = db_clone.lock().unwrap();
+                    let chunk_repo =
+                        crate::repository::chunk_repo::SqliteChunkRepository { conn: &conn };
+                    let _ = crate::repository::chunk_repo::ChunkRepository::update_embedding(
+                        &chunk_repo,
+                        &chunk.id,
+                        &embedding.vector,
+                    );
+                }
+                Err(e) => eprintln!("Chunk embedding failed: {}", e),
+            }
+        }
+    });
+
+    Ok(note)
+}
+
+#[tauri::command]
+pub fn delete_note(id: String, db: State<'_, Arc<Mutex<Connection>>>) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let repo = SqliteNoteRepository { conn: &conn };
+    repo.delete(&id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -149,42 +208,84 @@ pub async fn chat(query: String, db: State<'_, Arc<Mutex<Connection>>>) -> Resul
 }
 
 #[tauri::command]
+pub fn create_session(
+    name: String,
+    db: State<'_, Arc<Mutex<Connection>>>,
+) -> Result<crate::models::ChatSession, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let repo = crate::repository::session_repo::SqliteSessionRepository { conn: &conn };
+    crate::repository::session_repo::SessionRepository::create_session(&repo, &name)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_sessions(
+    db: State<'_, Arc<Mutex<Connection>>>,
+) -> Result<Vec<crate::models::ChatSession>, String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let repo = crate::repository::session_repo::SqliteSessionRepository { conn: &conn };
+    let sessions = crate::repository::session_repo::SessionRepository::get_all_sessions(&repo)
+        .map_err(|e| e.to_string())?;
+
+    if sessions.is_empty() {
+        let default =
+            crate::repository::session_repo::SessionRepository::ensure_default_session(&repo)
+                .map_err(|e| e.to_string())?;
+        return Ok(vec![default]);
+    }
+
+    Ok(sessions)
+}
+
+#[tauri::command]
+pub fn rename_session(
+    id: String,
+    name: String,
+    db: State<'_, Arc<Mutex<Connection>>>,
+) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let repo = crate::repository::session_repo::SqliteSessionRepository { conn: &conn };
+    crate::repository::session_repo::SessionRepository::rename_session(&repo, &id, &name)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_session(id: String, db: State<'_, Arc<Mutex<Connection>>>) -> Result<(), String> {
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    let repo = crate::repository::session_repo::SqliteSessionRepository { conn: &conn };
+    crate::repository::session_repo::SessionRepository::delete_session(&repo, &id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn save_message(
+    session_id: String,
     role: String,
     content: String,
     timestamp: String,
     db: State<'_, Arc<Mutex<Connection>>>,
 ) -> Result<(), String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
-    let id = uuid::Uuid::new_v4().to_string();
-    conn.execute(
-        "INSERT INTO chat_history (id, role, content, timestamp) VALUES (?1, ?2, ?3, ?4)",
-        rusqlite::params![id, role, content, timestamp],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    let repo = crate::repository::session_repo::SqliteSessionRepository { conn: &conn };
+    let msg = ChatMessage {
+        session_id,
+        role,
+        content,
+        timestamp,
+    };
+    crate::repository::session_repo::SessionRepository::save_message(&repo, &msg)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn get_chat_history(db: State<'_, Arc<Mutex<Connection>>>) -> Result<Vec<ChatMessage>, String> {
+pub fn get_chat_history(
+    session_id: String,
+    db: State<'_, Arc<Mutex<Connection>>>,
+) -> Result<Vec<ChatMessage>, String> {
     let conn = db.lock().map_err(|e| e.to_string())?;
-    let mut stmt = conn
-        .prepare("SELECT role, content, timestamp FROM chat_history ORDER BY timestamp ASC")
-        .map_err(|e| e.to_string())?;
-
-    let messages = stmt
-        .query_map([], |row| {
-            Ok(ChatMessage {
-                role: row.get(0)?,
-                content: row.get(1)?,
-                timestamp: row.get(2)?,
-            })
-        })
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
-
-    Ok(messages)
+    let repo = crate::repository::session_repo::SqliteSessionRepository { conn: &conn };
+    crate::repository::session_repo::SessionRepository::get_messages(&repo, &session_id)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -206,7 +307,6 @@ pub async fn generate_insights(
         let insight_repo = SqliteInsightRepository { conn: &conn };
         let chunk_repo = crate::repository::chunk_repo::SqliteChunkRepository { conn: &conn };
 
-        // Use chunk embeddings instead of note embeddings
         let chunks =
             crate::repository::chunk_repo::ChunkRepository::get_all_chunks_with_embeddings(
                 &chunk_repo,
@@ -292,66 +392,4 @@ pub async fn check_ollama() -> Result<bool, String> {
         }
         Err(_) => Ok(false),
     }
-}
-
-#[tauri::command]
-pub async fn update_note(
-    id: String,
-    content: String,
-    thought_at: Option<String>,
-    db: State<'_, Arc<Mutex<Connection>>>,
-) -> Result<Note, String> {
-    let note = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
-        let repo = SqliteNoteRepository { conn: &conn };
-        repo.update(&id, &content, thought_at)
-            .map_err(|e| e.to_string())?
-    };
-
-    // Delete old chunks, create new ones, re-embed in background
-    {
-        let conn = db.lock().map_err(|e| e.to_string())?;
-        let chunk_repo = crate::repository::chunk_repo::SqliteChunkRepository { conn: &conn };
-        crate::repository::chunk_repo::ChunkRepository::delete_chunks_for_note(&chunk_repo, &id)
-            .map_err(|e| e.to_string())?;
-    }
-
-    let chunking_svc = crate::services::ChunkingService::new();
-    let chunks = chunking_svc.chunk(&note.id, &content);
-
-    {
-        let conn = db.lock().map_err(|e| e.to_string())?;
-        let chunk_repo = crate::repository::chunk_repo::SqliteChunkRepository { conn: &conn };
-        crate::repository::chunk_repo::ChunkRepository::save_chunks(&chunk_repo, &chunks)
-            .map_err(|e| e.to_string())?;
-    }
-
-    let db_clone = db.inner().clone();
-    tokio::spawn(async move {
-        let svc = EmbeddingService::new();
-        for chunk in &chunks {
-            match svc.generate(&chunk.id, &chunk.content).await {
-                Ok(embedding) => {
-                    let conn = db_clone.lock().unwrap();
-                    let chunk_repo =
-                        crate::repository::chunk_repo::SqliteChunkRepository { conn: &conn };
-                    let _ = crate::repository::chunk_repo::ChunkRepository::update_embedding(
-                        &chunk_repo,
-                        &chunk.id,
-                        &embedding.vector,
-                    );
-                }
-                Err(e) => eprintln!("Chunk embedding failed: {}", e),
-            }
-        }
-    });
-
-    Ok(note)
-}
-
-#[tauri::command]
-pub fn delete_note(id: String, db: State<'_, Arc<Mutex<Connection>>>) -> Result<(), String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
-    let repo = SqliteNoteRepository { conn: &conn };
-    repo.delete(&id).map_err(|e| e.to_string())
 }
