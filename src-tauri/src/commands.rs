@@ -7,7 +7,7 @@ use crate::services::{ChatService, InsightService};
 use chrono::Utc;
 use rusqlite::Connection;
 use std::sync::{Arc, Mutex};
-use tauri::State;
+use tauri::{Manager, State};
 use uuid::Uuid;
 
 #[tauri::command]
@@ -125,10 +125,18 @@ pub fn get_notes(db: State<'_, Arc<Mutex<Connection>>>) -> Result<Vec<Note>, Str
 }
 
 #[tauri::command]
-pub async fn chat(query: String, db: State<'_, Arc<Mutex<Connection>>>) -> Result<String, String> {
+pub async fn chat(
+    query: String,
+    db: State<'_, Arc<Mutex<Connection>>>,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
     println!("chat command called with query: {}", query);
+
+    let app_data_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+    let settings = crate::settings::load(&app_data_dir);
+
     let embedding_svc = EmbeddingService::new();
-    let chat_svc = ChatService::new();
+    let chat_svc = ChatService::with_model(settings.active_model);
 
     println!("about to generate query embedding");
     let query_embedding = embedding_svc
@@ -298,11 +306,13 @@ pub fn get_insights(db: State<'_, Arc<Mutex<Connection>>>) -> Result<Vec<Insight
 #[tauri::command]
 pub async fn generate_insights(
     db: State<'_, Arc<Mutex<Connection>>>,
+    app_handle: tauri::AppHandle,
 ) -> Result<Vec<Insight>, String> {
-    let insight_svc = InsightService::new();
+    let app_data_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+    let settings = crate::settings::load(&app_data_dir);
+    let insight_svc = InsightService::with_model(settings.active_model);
 
     // Step 1: backfill embeddings for any chunks that are missing them.
-    // This handles notes that were added before the localhost->127.0.0.1 fix.
     let chunks_to_embed = {
         let conn = db.lock().map_err(|e| e.to_string())?;
         let chunk_repo = crate::repository::chunk_repo::SqliteChunkRepository { conn: &conn };
@@ -425,4 +435,195 @@ pub async fn check_ollama() -> Result<bool, String> {
         }
         Err(_) => Ok(false),
     }
+}
+
+// ── System status & settings commands ────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+pub struct ModelInfo {
+    pub name: String,
+    pub size_bytes: u64,
+}
+
+#[derive(serde::Serialize)]
+pub struct GpuInfo {
+    pub name: String,
+    pub free_vram_mb: u64,
+    pub total_vram_mb: u64,
+}
+
+#[derive(serde::Serialize)]
+pub struct SystemStatus {
+    pub ollama_reachable: bool,
+    pub models: Vec<ModelInfo>,
+    pub gpu: Option<GpuInfo>,
+    pub total_ram_mb: u64,
+    pub active_model: String,
+    pub ollama_models_path: String,
+}
+
+fn detect_gpu_info() -> Option<GpuInfo> {
+    let output = std::process::Command::new("nvidia-smi")
+        .args([
+            "--query-gpu=name,memory.free,memory.total",
+            "--format=csv,noheader,nounits",
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let line = stdout.lines().next()?;
+    let parts: Vec<&str> = line.split(',').collect();
+    if parts.len() < 3 {
+        return None;
+    }
+
+    Some(GpuInfo {
+        name: parts[0].trim().to_string(),
+        free_vram_mb: parts[1].trim().parse().ok()?,
+        total_vram_mb: parts[2].trim().parse().ok()?,
+    })
+}
+
+fn detect_total_ram_mb() -> u64 {
+    #[cfg(target_os = "windows")]
+    {
+        let output = std::process::Command::new("wmic")
+            .args(["OS", "get", "TotalVisibleMemorySize", "/Value"])
+            .output()
+            .ok();
+
+        if let Some(out) = output {
+            if out.status.success() {
+                let stdout = String::from_utf8(out.stdout).unwrap_or_default();
+                for line in stdout.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("TotalVisibleMemorySize=") {
+                        if let Ok(kb) =
+                            trimmed["TotalVisibleMemorySize=".len()..].parse::<u64>()
+                        {
+                            return kb / 1024;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    0
+}
+
+#[tauri::command]
+pub async fn get_system_status(app_handle: tauri::AppHandle) -> Result<SystemStatus, String> {
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+
+    let settings = crate::settings::load(&app_data_dir);
+
+    let client = reqwest::Client::new();
+    let (ollama_reachable, models) = match client
+        .get("http://127.0.0.1:11434/api/tags")
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+    {
+        Ok(res) if res.status().is_success() => {
+            let json: serde_json::Value = res.json().await.unwrap_or_default();
+            let models = json["models"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .map(|m| ModelInfo {
+                            name: m["name"].as_str().unwrap_or("").to_string(),
+                            size_bytes: m["size"].as_u64().unwrap_or(0),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            (true, models)
+        }
+        _ => (false, vec![]),
+    };
+
+    let gpu = detect_gpu_info();
+    let total_ram_mb = detect_total_ram_mb();
+    let ollama_models_path = std::env::var("OLLAMA_MODELS")
+        .unwrap_or_else(|_| "~/.ollama/models (default)".to_string());
+
+    Ok(SystemStatus {
+        ollama_reachable,
+        models,
+        gpu,
+        total_ram_mb,
+        active_model: settings.active_model,
+        ollama_models_path,
+    })
+}
+
+#[tauri::command]
+pub fn get_settings(app_handle: tauri::AppHandle) -> Result<crate::settings::AppSettings, String> {
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    Ok(crate::settings::load(&app_data_dir))
+}
+
+#[tauri::command]
+pub async fn set_active_model(
+    model: String,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    // Check if the model is already pulled.
+    let client = reqwest::Client::new();
+    let already_pulled = match client
+        .get("http://127.0.0.1:11434/api/tags")
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+    {
+        Ok(res) => {
+            let json: serde_json::Value = res.json().await.unwrap_or_default();
+            json["models"]
+                .as_array()
+                .map(|arr| arr.iter().any(|m| m["name"].as_str().unwrap_or("") == model))
+                .unwrap_or(false)
+        }
+        Err(_) => false,
+    };
+
+    if !already_pulled {
+        eprintln!("[SOMA] set_active_model: pulling {}", model);
+        // Redirect stdout/stderr to null — Tauri GUI apps have no console
+        // handle, and ollama prints a "failed to get console mode" warning
+        // if it inherits an invalid handle. Use tokio::process so the async
+        // runtime isn't blocked while the download runs.
+        let status = tokio::process::Command::new("ollama")
+            .args(["pull", &model])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await
+            .map_err(|e| format!("Failed to start ollama pull: {}", e))?;
+
+        if !status.success() {
+            return Err(format!("ollama pull {} failed", model));
+        }
+    }
+
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+
+    let mut settings = crate::settings::load(&app_data_dir);
+    settings.active_model = model;
+    crate::settings::save(&app_data_dir, &settings).map_err(|e| e.to_string())?;
+
+    Ok(())
 }
