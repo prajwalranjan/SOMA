@@ -599,9 +599,16 @@ pub async fn set_active_model(
 
     if !already_pulled {
         eprintln!("[SOMA] set_active_model: pulling {}", model);
-        let status = std::process::Command::new("ollama")
+        // Redirect stdout/stderr to null — Tauri GUI apps have no console
+        // handle, and ollama prints a "failed to get console mode" warning
+        // if it inherits an invalid handle. Use tokio::process so the async
+        // runtime isn't blocked while the download runs.
+        let status = tokio::process::Command::new("ollama")
             .args(["pull", &model])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .status()
+            .await
             .map_err(|e| format!("Failed to start ollama pull: {}", e))?;
 
         if !status.success() {
