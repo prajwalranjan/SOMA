@@ -1,6 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { Note } from "./types";
-import { ChatMessage } from "./types";
+import { Note, ChatMessage, SystemStatus, AppSettings } from "./types";
 
 export async function addNote(
     content: string,
@@ -23,4 +22,16 @@ export async function saveMessage(
 
 export async function getChatHistory(): Promise<ChatMessage[]> {
     return await invoke<ChatMessage[]>("get_chat_history");
+}
+
+export async function getSystemStatus(): Promise<SystemStatus> {
+    return await invoke<SystemStatus>("get_system_status");
+}
+
+export async function getSettings(): Promise<AppSettings> {
+    return await invoke<AppSettings>("get_settings");
+}
+
+export async function setActiveModel(model: string): Promise<void> {
+    return await invoke<void>("set_active_model", { model });
 }

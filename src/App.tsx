@@ -4,14 +4,18 @@ import { SetupPage } from "./pages/SetupPage";
 import { NotesPage } from "./pages/NotesPage";
 import { ChatPage } from "./pages/ChatPage";
 import { InsightsPage } from "./pages/InsightsPage";
+import { StatusPage } from "./pages/StatusPage";
+import { SettingsPage } from "./pages/SettingsPage";
 import "./App.css";
 
-type Page = "notes" | "chat" | "insights";
+type Page = "notes" | "chat" | "insights" | "status" | "settings";
 
 const NAV = [
   { id: "notes" as Page, label: "Notes", icon: "✦" },
   { id: "chat" as Page, label: "Chat", icon: "◈" },
   { id: "insights" as Page, label: "Insights", icon: "◉" },
+  { id: "status" as Page, label: "Status", icon: "◎" },
+  { id: "settings" as Page, label: "Settings", icon: "⊹" },
 ];
 
 export default function App() {
@@ -88,6 +92,8 @@ export default function App() {
         {page === "notes" && <NotesPage />}
         {page === "chat" && <ChatPage />}
         {page === "insights" && <InsightsPage />}
+        {page === "status" && <StatusPage />}
+        {page === "settings" && <SettingsPage />}
       </main>
     </div>
   );

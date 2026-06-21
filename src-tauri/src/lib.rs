@@ -4,6 +4,7 @@ mod models;
 mod repository;
 mod scheduler;
 mod services;
+mod settings;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Manager;
@@ -119,6 +120,9 @@ pub fn run() {
             commands::get_insights,
             commands::generate_insights,
             commands::check_ollama,
+            commands::get_system_status,
+            commands::get_settings,
+            commands::set_active_model,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

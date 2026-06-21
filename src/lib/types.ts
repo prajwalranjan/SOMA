@@ -28,3 +28,28 @@ export interface ChatSession {
     created_at: string;
     updated_at: string;
 }
+
+export interface ModelInfo {
+    name: string;
+    size_bytes: number;
+}
+
+export interface GpuInfo {
+    name: string;
+    free_vram_mb: number;
+    total_vram_mb: number;
+}
+
+export interface SystemStatus {
+    ollama_reachable: boolean;
+    models: ModelInfo[];
+    gpu: GpuInfo | null;
+    total_ram_mb: number;
+    active_model: string;
+    ollama_models_path: string;
+}
+
+export interface AppSettings {
+    active_model: string;
+    embedding_model: string;
+}

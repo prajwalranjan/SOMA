@@ -47,6 +47,10 @@ impl InsightService {
     pub fn new() -> Self {
         Self { model: "phi3:mini".to_string(), client: OllamaClient::new() }
     }
+
+    pub fn with_model(model: impl Into<String>) -> Self {
+        Self { model: model.into(), client: OllamaClient::new() }
+    }
 }
 
 impl<C: OllamaApi> InsightService<C> {
