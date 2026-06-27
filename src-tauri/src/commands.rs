@@ -1,8 +1,10 @@
 use crate::models::{ChatMessage, Insight, Note};
+use crate::repository::chunk_repo::{ChunkRepository, SqliteChunkRepository};
 use crate::repository::insight_repo::SqliteInsightRepository;
 use crate::repository::note_repo::NoteRepository;
 use crate::repository::note_repo::SqliteNoteRepository;
-use crate::services::embedding_service::{cosine_similarity, EmbeddingService};
+use crate::services::embedding_service::{cosine_similarity, EmbedTask, EmbeddingService};
+use crate::services::ollama_client::OllamaClient;
 use crate::services::{ChatService, InsightService};
 use chrono::Utc;
 use rusqlite::Connection;
@@ -10,11 +12,50 @@ use std::sync::{Arc, Mutex};
 use tauri::{Manager, State};
 use uuid::Uuid;
 
+/// Spawns background generation of both the search_document: (retrieval) and
+/// clustering: (insight engine) embeddings for a freshly chunked note. Fire-and-forget:
+/// note save already returned to the caller before this runs. Failures are logged, not
+/// propagated — the generate_insights backfill step is the safety net for any chunk
+/// that ends up missing one or both embeddings.
+fn spawn_chunk_embedding(
+    db: Arc<Mutex<Connection>>,
+    chunks: Vec<crate::models::NoteChunk>,
+    embedding_model: String,
+) {
+    tokio::spawn(async move {
+        let svc = EmbeddingService::with_client(embedding_model, OllamaClient::new());
+        for chunk in &chunks {
+            match svc.generate(&chunk.id, &chunk.content, EmbedTask::Document).await {
+                Ok(embedding) => {
+                    let conn = db.lock().unwrap();
+                    let chunk_repo = SqliteChunkRepository { conn: &conn };
+                    let _ = chunk_repo.update_embedding(&chunk.id, &embedding.vector, &embedding.model);
+                }
+                Err(e) => eprintln!("[SOMA] Chunk document embedding failed: {}", e),
+            }
+
+            match svc.generate(&chunk.id, &chunk.content, EmbedTask::Clustering).await {
+                Ok(embedding) => {
+                    let conn = db.lock().unwrap();
+                    let chunk_repo = SqliteChunkRepository { conn: &conn };
+                    let _ = chunk_repo.update_clustering_embedding(
+                        &chunk.id,
+                        &embedding.vector,
+                        &embedding.model,
+                    );
+                }
+                Err(e) => eprintln!("[SOMA] Chunk clustering embedding failed: {}", e),
+            }
+        }
+    });
+}
+
 #[tauri::command]
 pub async fn add_note(
     content: String,
     thought_at: Option<String>,
     db: State<'_, Arc<Mutex<Connection>>>,
+    app_handle: tauri::AppHandle,
 ) -> Result<Note, String> {
     let note = {
         let conn = db.lock().map_err(|e| e.to_string())?;
@@ -28,30 +69,13 @@ pub async fn add_note(
 
     {
         let conn = db.lock().map_err(|e| e.to_string())?;
-        let chunk_repo = crate::repository::chunk_repo::SqliteChunkRepository { conn: &conn };
-        crate::repository::chunk_repo::ChunkRepository::save_chunks(&chunk_repo, &chunks)
-            .map_err(|e| e.to_string())?;
+        let chunk_repo = SqliteChunkRepository { conn: &conn };
+        chunk_repo.save_chunks(&chunks).map_err(|e| e.to_string())?;
     }
 
-    let db_clone = db.inner().clone();
-    tokio::spawn(async move {
-        let svc = EmbeddingService::new();
-        for chunk in &chunks {
-            match svc.generate(&chunk.id, &chunk.content).await {
-                Ok(embedding) => {
-                    let conn = db_clone.lock().unwrap();
-                    let chunk_repo =
-                        crate::repository::chunk_repo::SqliteChunkRepository { conn: &conn };
-                    let _ = crate::repository::chunk_repo::ChunkRepository::update_embedding(
-                        &chunk_repo,
-                        &chunk.id,
-                        &embedding.vector,
-                    );
-                }
-                Err(e) => eprintln!("Chunk embedding failed: {}", e),
-            }
-        }
-    });
+    let app_data_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+    let settings = crate::settings::load(&app_data_dir);
+    spawn_chunk_embedding(db.inner().clone(), chunks, settings.embedding_model);
 
     Ok(note)
 }
@@ -62,6 +86,7 @@ pub async fn update_note(
     content: String,
     thought_at: Option<String>,
     db: State<'_, Arc<Mutex<Connection>>>,
+    app_handle: tauri::AppHandle,
 ) -> Result<Note, String> {
     let note = {
         let conn = db.lock().map_err(|e| e.to_string())?;
@@ -72,9 +97,8 @@ pub async fn update_note(
 
     {
         let conn = db.lock().map_err(|e| e.to_string())?;
-        let chunk_repo = crate::repository::chunk_repo::SqliteChunkRepository { conn: &conn };
-        crate::repository::chunk_repo::ChunkRepository::delete_chunks_for_note(&chunk_repo, &id)
-            .map_err(|e| e.to_string())?;
+        let chunk_repo = SqliteChunkRepository { conn: &conn };
+        chunk_repo.delete_chunks_for_note(&id).map_err(|e| e.to_string())?;
     }
 
     let chunking_svc = crate::services::ChunkingService::new();
@@ -82,30 +106,13 @@ pub async fn update_note(
 
     {
         let conn = db.lock().map_err(|e| e.to_string())?;
-        let chunk_repo = crate::repository::chunk_repo::SqliteChunkRepository { conn: &conn };
-        crate::repository::chunk_repo::ChunkRepository::save_chunks(&chunk_repo, &chunks)
-            .map_err(|e| e.to_string())?;
+        let chunk_repo = SqliteChunkRepository { conn: &conn };
+        chunk_repo.save_chunks(&chunks).map_err(|e| e.to_string())?;
     }
 
-    let db_clone = db.inner().clone();
-    tokio::spawn(async move {
-        let svc = EmbeddingService::new();
-        for chunk in &chunks {
-            match svc.generate(&chunk.id, &chunk.content).await {
-                Ok(embedding) => {
-                    let conn = db_clone.lock().unwrap();
-                    let chunk_repo =
-                        crate::repository::chunk_repo::SqliteChunkRepository { conn: &conn };
-                    let _ = crate::repository::chunk_repo::ChunkRepository::update_embedding(
-                        &chunk_repo,
-                        &chunk.id,
-                        &embedding.vector,
-                    );
-                }
-                Err(e) => eprintln!("Chunk embedding failed: {}", e),
-            }
-        }
-    });
+    let app_data_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+    let settings = crate::settings::load(&app_data_dir);
+    spawn_chunk_embedding(db.inner().clone(), chunks, settings.embedding_model);
 
     Ok(note)
 }
@@ -135,12 +142,12 @@ pub async fn chat(
     let app_data_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
     let settings = crate::settings::load(&app_data_dir);
 
-    let embedding_svc = EmbeddingService::new();
+    let embedding_svc = EmbeddingService::with_client(settings.embedding_model, OllamaClient::new());
     let chat_svc = ChatService::with_model(settings.active_model);
 
     println!("about to generate query embedding");
     let query_embedding = embedding_svc
-        .generate("query", &query)
+        .generate("query", &query, EmbedTask::Query)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -153,19 +160,13 @@ pub async fn chat(
         let conn = db.lock().map_err(|e| e.to_string())?;
         println!("got db lock");
         let note_repo = SqliteNoteRepository { conn: &conn };
-        let chunk_repo = crate::repository::chunk_repo::SqliteChunkRepository { conn: &conn };
-        let count = crate::repository::chunk_repo::ChunkRepository::count_chunks_with_embeddings(
-            &chunk_repo,
-        )
-        .map_err(|e| e.to_string())?;
+        let chunk_repo = SqliteChunkRepository { conn: &conn };
+        let count = chunk_repo.count_chunks_with_embeddings().map_err(|e| e.to_string())?;
         println!("chunk count: {}", count);
 
         if count >= 3 {
             let all_chunks =
-                crate::repository::chunk_repo::ChunkRepository::get_all_chunks_with_embeddings(
-                    &chunk_repo,
-                )
-                .map_err(|e| e.to_string())?;
+                chunk_repo.get_all_chunks_with_embeddings().map_err(|e| e.to_string())?;
             println!("fetched {} chunks", all_chunks.len());
 
             let mut scored: Vec<(f32, String)> = all_chunks
@@ -311,55 +312,68 @@ pub async fn generate_insights(
     let app_data_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
     let settings = crate::settings::load(&app_data_dir);
     let insight_svc = InsightService::with_model(settings.active_model);
+    let embedding_model = settings.embedding_model;
 
-    // Step 1: backfill embeddings for any chunks that are missing them.
+    // Step 1: backfill clustering embeddings for any chunks that are missing them
+    // or were embedded with a now-stale model. (Document embeddings are backfilled
+    // by spawn_chunk_embedding on note save/update; this step covers clustering only.)
     let chunks_to_embed = {
         let conn = db.lock().map_err(|e| e.to_string())?;
-        let chunk_repo = crate::repository::chunk_repo::SqliteChunkRepository { conn: &conn };
-        crate::repository::chunk_repo::ChunkRepository::get_chunks_without_embeddings(&chunk_repo)
+        let chunk_repo = SqliteChunkRepository { conn: &conn };
+        chunk_repo
+            .get_chunks_without_clustering_embeddings(&embedding_model)
             .map_err(|e| e.to_string())?
     };
 
-    eprintln!("[SOMA] generate_insights: {} chunks missing embeddings — backfilling", chunks_to_embed.len());
+    eprintln!(
+        "[SOMA] generate_insights: {} chunks missing/stale clustering embeddings — backfilling with {}",
+        chunks_to_embed.len(),
+        embedding_model
+    );
 
     if !chunks_to_embed.is_empty() {
-        let embedding_svc = EmbeddingService::new();
+        let embedding_svc =
+            EmbeddingService::with_client(embedding_model.clone(), OllamaClient::new());
         for chunk in &chunks_to_embed {
-            match embedding_svc.generate(&chunk.id, &chunk.content).await {
+            match embedding_svc
+                .generate(&chunk.id, &chunk.content, EmbedTask::Clustering)
+                .await
+            {
                 Ok(embedding) => {
                     let conn = db.lock().map_err(|e| e.to_string())?;
-                    let chunk_repo = crate::repository::chunk_repo::SqliteChunkRepository { conn: &conn };
-                    let _ = crate::repository::chunk_repo::ChunkRepository::update_embedding(
-                        &chunk_repo,
+                    let chunk_repo = SqliteChunkRepository { conn: &conn };
+                    let _ = chunk_repo.update_clustering_embedding(
                         &chunk.id,
                         &embedding.vector,
+                        &embedding.model,
                     );
-                    eprintln!("[SOMA] backfilled embedding for chunk {}", chunk.id);
+                    eprintln!("[SOMA] backfilled clustering embedding for chunk {}", chunk.id);
                 }
                 Err(e) => eprintln!("[SOMA] backfill failed for chunk {}: {}", chunk.id, e),
             }
         }
     }
 
-    // Step 2: load all embeddings, cluster, generate insights.
+    // Step 2: load all clustering embeddings, cluster, generate insights.
     let (embeddings, existing_insights) = {
         let conn = db.lock().map_err(|e| e.to_string())?;
         let insight_repo = SqliteInsightRepository { conn: &conn };
-        let chunk_repo = crate::repository::chunk_repo::SqliteChunkRepository { conn: &conn };
+        let chunk_repo = SqliteChunkRepository { conn: &conn };
 
-        let chunks =
-            crate::repository::chunk_repo::ChunkRepository::get_all_chunks_with_embeddings(
-                &chunk_repo,
-            )
+        let chunks = chunk_repo
+            .get_all_chunks_with_clustering_embeddings()
             .map_err(|e| e.to_string())?;
 
         let embeddings: Vec<crate::models::Embedding> = chunks
             .iter()
             .filter_map(|c| {
-                c.embedding.as_ref().map(|v| crate::models::Embedding {
+                c.clustering_embedding.as_ref().map(|v| crate::models::Embedding {
                     note_id: c.note_id.clone(),
                     vector: v.clone(),
-                    model: "nomic-embed-text".to_string(),
+                    model: c
+                        .clustering_embedding_model
+                        .clone()
+                        .unwrap_or_else(|| embedding_model.clone()),
                     created_at: c.created_at.clone(),
                 })
             })
@@ -368,7 +382,11 @@ pub async fn generate_insights(
         let existing = crate::repository::insight_repo::InsightRepository::get_all(&insight_repo)
             .map_err(|e| e.to_string())?;
 
-        eprintln!("[SOMA] generate_insights: {} embeddings loaded, {} existing insights", embeddings.len(), existing.len());
+        eprintln!(
+            "[SOMA] generate_insights: {} clustering embeddings loaded, {} existing insights",
+            embeddings.len(),
+            existing.len()
+        );
 
         (embeddings, existing)
     };

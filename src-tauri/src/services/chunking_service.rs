@@ -29,6 +29,9 @@ impl ChunkingService {
                 chunk_index: i,
                 content: content.trim().to_string(),
                 embedding: None,
+                clustering_embedding: None,
+                embedding_model: None,
+                clustering_embedding_model: None,
                 created_at: Utc::now().to_rfc3339(),
             })
             .collect()
