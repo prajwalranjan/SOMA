@@ -2,14 +2,15 @@ mod commands;
 mod db;
 mod models;
 mod repository;
-mod scheduler;
 mod services;
 mod settings;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use tauri::Manager;
 
 static SOMA_OWNS_OLLAMA: AtomicBool = AtomicBool::new(false);
+/// PID of the Ollama process SOMA launched. Zero means not yet set.
+static OLLAMA_PID: AtomicU32 = AtomicU32::new(0);
 
 /// Returns free VRAM in MB from the first NVIDIA GPU, or None if nvidia-smi is
 /// unavailable (non-NVIDIA hardware, macOS, AMD, etc.).
@@ -41,7 +42,6 @@ pub fn run() {
             let db_path = app_dir.join("soma.db");
             let conn = db::init_db(&db_path).expect("failed to initialise database");
             let conn = std::sync::Arc::new(std::sync::Mutex::new(conn));
-            crate::scheduler::start_scheduler(conn.clone());
             app.manage(conn);
 
             // Run all Ollama startup work in a background thread so the UI
@@ -83,10 +83,17 @@ pub fn run() {
                         }
                     }
 
-                    if cmd.spawn().is_ok() {
-                        SOMA_OWNS_OLLAMA.store(true, Ordering::SeqCst);
-                        eprintln!("[SOMA] Started Ollama");
-                        std::thread::sleep(std::time::Duration::from_secs(2));
+                    match cmd.spawn() {
+                        Ok(child) => {
+                            // Store the PID so on_window_event can kill by PID
+                            // on non-Windows platforms (more precise than kill-by-name).
+                            OLLAMA_PID.store(child.id(), Ordering::SeqCst);
+                            SOMA_OWNS_OLLAMA.store(true, Ordering::SeqCst);
+                            eprintln!("[SOMA] Started Ollama (pid={})", child.id());
+                            // child handle drops here; Ollama runs independently.
+                            std::thread::sleep(std::time::Duration::from_secs(2));
+                        }
+                        Err(e) => eprintln!("[SOMA] Failed to start Ollama: {}", e),
                     }
                 } else {
                     eprintln!("[SOMA] Ollama already running - not owned by SOMA");
@@ -98,10 +105,29 @@ pub fn run() {
         .on_window_event(|_window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 if SOMA_OWNS_OLLAMA.load(Ordering::SeqCst) {
-                    println!("SOMA shutting down Ollama...");
-                    let _ = std::process::Command::new("taskkill")
-                        .args(["/F", "/IM", "ollama.exe"])
-                        .output();
+                    let pid = OLLAMA_PID.load(Ordering::SeqCst);
+                    println!("[SOMA] Shutting down Ollama (pid={})...", pid);
+
+                    // Windows: taskkill by name catches the whole ollama process
+                    // tree (including any LLM sub-processes ollama spawns).
+                    #[cfg(target_os = "windows")]
+                    {
+                        let _ = std::process::Command::new("taskkill")
+                            .args(["/F", "/IM", "ollama.exe"])
+                            .output();
+                    }
+
+                    // Linux / macOS: send SIGTERM to the exact PID we spawned.
+                    // Guard against PID 0 (kill(0, TERM) would signal the whole
+                    // process group, which is never what we want here).
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        if pid != 0 {
+                            let _ = std::process::Command::new("kill")
+                                .args(["-TERM", &pid.to_string()])
+                                .output();
+                        }
+                    }
                 }
             }
         })

@@ -12,6 +12,24 @@ use std::sync::{Arc, Mutex};
 use tauri::{Manager, State};
 use uuid::Uuid;
 
+/// Chunks `content`, persists the chunks, and spawns background embedding generation.
+/// Called by both `add_note` and `update_note` after the note row is written.
+fn rechunk_and_embed(
+    note_id: &str,
+    content: &str,
+    db: Arc<Mutex<Connection>>,
+    embedding_model: String,
+) -> Result<(), String> {
+    let chunks = crate::services::ChunkingService::new().chunk(note_id, content);
+    {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        let chunk_repo = SqliteChunkRepository { conn: &conn };
+        chunk_repo.save_chunks(&chunks).map_err(|e| e.to_string())?;
+    }
+    spawn_chunk_embedding(db, chunks, embedding_model);
+    Ok(())
+}
+
 /// Spawns background generation of both the search_document: (retrieval) and
 /// clustering: (insight engine) embeddings for a freshly chunked note. Fire-and-forget:
 /// note save already returned to the caller before this runs. Failures are logged, not
@@ -64,18 +82,9 @@ pub async fn add_note(
             .map_err(|e| e.to_string())?
     };
 
-    let chunking_svc = crate::services::ChunkingService::new();
-    let chunks = chunking_svc.chunk(&note.id, &content);
-
-    {
-        let conn = db.lock().map_err(|e| e.to_string())?;
-        let chunk_repo = SqliteChunkRepository { conn: &conn };
-        chunk_repo.save_chunks(&chunks).map_err(|e| e.to_string())?;
-    }
-
     let app_data_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
     let settings = crate::settings::load(&app_data_dir);
-    spawn_chunk_embedding(db.inner().clone(), chunks, settings.embedding_model);
+    rechunk_and_embed(&note.id, &content, db.inner().clone(), settings.embedding_model)?;
 
     Ok(note)
 }
@@ -101,18 +110,9 @@ pub async fn update_note(
         chunk_repo.delete_chunks_for_note(&id).map_err(|e| e.to_string())?;
     }
 
-    let chunking_svc = crate::services::ChunkingService::new();
-    let chunks = chunking_svc.chunk(&note.id, &content);
-
-    {
-        let conn = db.lock().map_err(|e| e.to_string())?;
-        let chunk_repo = SqliteChunkRepository { conn: &conn };
-        chunk_repo.save_chunks(&chunks).map_err(|e| e.to_string())?;
-    }
-
     let app_data_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
     let settings = crate::settings::load(&app_data_dir);
-    spawn_chunk_embedding(db.inner().clone(), chunks, settings.embedding_model);
+    rechunk_and_embed(&note.id, &content, db.inner().clone(), settings.embedding_model)?;
 
     Ok(note)
 }
@@ -444,12 +444,15 @@ pub async fn generate_insights(
 }
 
 #[tauri::command]
-pub async fn check_ollama() -> Result<bool, String> {
+pub async fn check_ollama(app_handle: tauri::AppHandle) -> Result<bool, String> {
+    let app_data_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+    let settings = crate::settings::load(&app_data_dir);
+
     let client = reqwest::Client::new();
     match client.get("http://127.0.0.1:11434/api/tags").send().await {
         Ok(res) => {
             let text = res.text().await.unwrap_or_default();
-            Ok(text.contains("nomic-embed-text") && text.contains("phi3"))
+            Ok(text.contains(&settings.embedding_model) && text.contains(&settings.active_model))
         }
         Err(_) => Ok(false),
     }
@@ -531,6 +534,42 @@ fn detect_total_ram_mb() -> u64 {
             }
         }
     }
+
+    // /proc/meminfo format: "MemTotal:       16376648 kB"
+    // The value is in kibibytes; divide by 1024 to get MiB.
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(content) = std::fs::read_to_string("/proc/meminfo") {
+            for line in content.lines() {
+                if let Some(rest) = line.strip_prefix("MemTotal:") {
+                    if let Some(kb_str) = rest.split_whitespace().next() {
+                        if let Ok(kb) = kb_str.parse::<u64>() {
+                            return kb / 1024;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // `sysctl -n hw.memsize` returns total RAM in bytes as a single integer.
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("sysctl")
+            .args(["-n", "hw.memsize"])
+            .output()
+            .ok();
+
+        if let Some(out) = output {
+            if out.status.success() {
+                let stdout = String::from_utf8(out.stdout).unwrap_or_default();
+                if let Ok(bytes) = stdout.trim().parse::<u64>() {
+                    return bytes / 1_048_576;
+                }
+            }
+        }
+    }
+
     0
 }
 
