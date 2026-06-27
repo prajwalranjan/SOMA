@@ -34,8 +34,14 @@ impl PromptBuilder {
             "These are a group of semantically related personal notes from a user:\n\n{}\n\n\
             Generate a brief, gentle insight about what these notes reveal. \
             Keep it to 2-3 sentences. Be observational, not prescriptive. \
-            Also suggest a short title (5 words max). \
-            Format your response as:\nTITLE: <title>\nINSIGHT: <insight>",
+            Also suggest a short title (5 words max).\n\n\
+            You MUST respond using EXACTLY this format — each label on its own line, uppercase:\n\
+            TITLE: <title>\n\
+            INSIGHT: <insight>\n\n\
+            For example:\n\
+            TITLE: Morning Habits and Energy\n\
+            INSIGHT: The user consistently reflects on their morning routines and physical activity. \
+            These notes suggest a strong connection between daily habits and emotional well-being.",
             notes_text
         )
     }
