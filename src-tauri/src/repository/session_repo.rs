@@ -7,6 +7,7 @@ use uuid::Uuid;
 pub trait SessionRepository {
     fn create_session(&self, name: &str) -> Result<ChatSession>;
     fn get_all_sessions(&self) -> Result<Vec<ChatSession>>;
+    fn get_session(&self, id: &str) -> Result<Option<ChatSession>>;
     fn rename_session(&self, id: &str, name: &str) -> Result<()>;
     fn delete_session(&self, id: &str) -> Result<()>;
     fn touch_session(&self, id: &str) -> Result<()>;
@@ -33,6 +34,24 @@ impl<'a> SessionRepository for SqliteSessionRepository<'a> {
             created_at: now.clone(),
             updated_at: now,
         })
+    }
+
+    fn get_session(&self, id: &str) -> Result<Option<ChatSession>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, created_at, updated_at FROM chat_sessions WHERE id = ?1",
+        )?;
+        let session = stmt
+            .query_map(rusqlite::params![id], |row| {
+                Ok(ChatSession {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    created_at: row.get(2)?,
+                    updated_at: row.get(3)?,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .next();
+        Ok(session)
     }
 
     fn get_all_sessions(&self) -> Result<Vec<ChatSession>> {
@@ -140,6 +159,26 @@ mod tests {
         )
         .unwrap();
         conn
+    }
+
+    #[test]
+    fn get_session_returns_correct_session() {
+        let conn = test_conn();
+        let repo = SqliteSessionRepository { conn: &conn };
+
+        let created = repo.create_session("My session").unwrap();
+        let fetched = repo.get_session(&created.id).unwrap().expect("should find session");
+        assert_eq!(fetched.id, created.id);
+        assert_eq!(fetched.name, "My session");
+    }
+
+    #[test]
+    fn get_session_returns_none_for_missing_id() {
+        let conn = test_conn();
+        let repo = SqliteSessionRepository { conn: &conn };
+
+        let result = repo.get_session("nonexistent-id").unwrap();
+        assert!(result.is_none());
     }
 
     #[test]

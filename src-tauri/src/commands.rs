@@ -8,9 +8,22 @@ use crate::services::ollama_client::OllamaClient;
 use crate::services::{ChatService, InsightService};
 use chrono::Utc;
 use rusqlite::Connection;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{Manager, State};
 use uuid::Uuid;
+
+/// Resets the `Arc<AtomicBool>` flag to `false` when dropped, regardless of
+/// how the enclosing scope exits (normal return, early return, or panic unwind).
+/// This prevents `generate_insights` from leaving the flag stuck at `true` if a
+/// future code path adds a new early return and forgets to clear it manually.
+struct InsightGeneratingGuard(Arc<AtomicBool>);
+
+impl Drop for InsightGeneratingGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
 
 /// Chunks `content`, persists the chunks, and spawns background embedding generation.
 /// Called by both `add_note` and `update_note` after the note row is written.
@@ -266,24 +279,83 @@ pub fn delete_session(id: String, db: State<'_, Arc<Mutex<Connection>>>) -> Resu
         .map_err(|e| e.to_string())
 }
 
+/// Returns `true` when a session should be auto-titled from its first message:
+/// exactly one message exists in the session (the one we just saved) and the
+/// session still carries the default "New chat" name.
+fn should_auto_title(messages: &[ChatMessage], session_name: &str) -> bool {
+    messages.len() == 1 && session_name == "New chat"
+}
+
 #[tauri::command]
-pub fn save_message(
+pub async fn save_message(
     session_id: String,
     role: String,
     content: String,
     timestamp: String,
     db: State<'_, Arc<Mutex<Connection>>>,
+    app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let conn = db.lock().map_err(|e| e.to_string())?;
-    let repo = crate::repository::session_repo::SqliteSessionRepository { conn: &conn };
-    let msg = ChatMessage {
-        session_id,
-        role,
-        content,
-        timestamp,
-    };
-    crate::repository::session_repo::SessionRepository::save_message(&repo, &msg)
-        .map_err(|e| e.to_string())
+    {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        let repo = crate::repository::session_repo::SqliteSessionRepository { conn: &conn };
+        let msg = ChatMessage {
+            session_id: session_id.clone(),
+            role: role.clone(),
+            content: content.clone(),
+            timestamp,
+        };
+        crate::repository::session_repo::SessionRepository::save_message(&repo, &msg)
+            .map_err(|e| e.to_string())?;
+    }
+
+    // Auto-title: fire-and-forget background LLM call on the very first user message.
+    // The title generation runs concurrently with the frontend's chat LLM call, so by
+    // the time the user reads the AI response the session name is already updated.
+    if role == "user" && !content.trim().is_empty() {
+        let needs_title = {
+            let conn = db.lock().map_err(|e| e.to_string())?;
+            let repo = crate::repository::session_repo::SqliteSessionRepository { conn: &conn };
+            let messages =
+                crate::repository::session_repo::SessionRepository::get_messages(&repo, &session_id)
+                    .map_err(|e| e.to_string())?;
+            let session =
+                crate::repository::session_repo::SessionRepository::get_session(&repo, &session_id)
+                    .map_err(|e| e.to_string())?;
+            session.map_or(false, |s| should_auto_title(&messages, &s.name))
+        };
+
+        if needs_title {
+            let db_arc = db.inner().clone();
+            let session_id_for_spawn = session_id.clone();
+            let content_for_spawn = content.clone();
+            let app_data_dir =
+                app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+            let settings = crate::settings::load(&app_data_dir);
+
+            tokio::spawn(async move {
+                let chat_svc = ChatService::with_model(settings.active_model);
+                match chat_svc.generate_session_title(&content_for_spawn).await {
+                    Ok(title) => {
+                        let conn = db_arc.lock().unwrap();
+                        let repo =
+                            crate::repository::session_repo::SqliteSessionRepository { conn: &conn };
+                        let _ = crate::repository::session_repo::SessionRepository::rename_session(
+                            &repo,
+                            &session_id_for_spawn,
+                            &title,
+                        );
+                        eprintln!(
+                            "[SOMA] Auto-titled session {} as: {}",
+                            session_id_for_spawn, title
+                        );
+                    }
+                    Err(e) => eprintln!("[SOMA] Auto-title generation failed: {}", e),
+                }
+            });
+        }
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -305,10 +377,18 @@ pub fn get_insights(db: State<'_, Arc<Mutex<Connection>>>) -> Result<Vec<Insight
 }
 
 #[tauri::command]
+pub fn is_generating_insights(generating: State<'_, Arc<AtomicBool>>) -> bool {
+    generating.load(Ordering::SeqCst)
+}
+
+#[tauri::command]
 pub async fn generate_insights(
     db: State<'_, Arc<Mutex<Connection>>>,
     app_handle: tauri::AppHandle,
+    generating: State<'_, Arc<AtomicBool>>,
 ) -> Result<Vec<Insight>, String> {
+    generating.store(true, Ordering::SeqCst);
+    let _guard = InsightGeneratingGuard(generating.inner().clone());
     let app_data_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
     let settings = crate::settings::load(&app_data_dir);
     let insight_svc = InsightService::with_model(settings.active_model);
@@ -683,4 +763,60 @@ pub async fn set_active_model(
     crate::settings::save(&app_data_dir, &settings).map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msg(role: &str) -> ChatMessage {
+        ChatMessage {
+            session_id: "s1".to_string(),
+            role: role.to_string(),
+            content: "hello".to_string(),
+            timestamp: "t".to_string(),
+        }
+    }
+
+    // --- InsightGeneratingGuard tests ---
+
+    #[test]
+    fn insight_guard_resets_flag_on_scope_exit() {
+        let flag = Arc::new(AtomicBool::new(true));
+        {
+            let _guard = InsightGeneratingGuard(flag.clone());
+            assert!(flag.load(Ordering::SeqCst), "flag should be true while guard is live");
+        }
+        assert!(!flag.load(Ordering::SeqCst), "flag must be false after guard drops");
+    }
+
+    #[test]
+    fn insight_guard_resets_flag_on_explicit_drop() {
+        let flag = Arc::new(AtomicBool::new(true));
+        let guard = InsightGeneratingGuard(flag.clone());
+        drop(guard);
+        assert!(!flag.load(Ordering::SeqCst));
+    }
+
+    // --- should_auto_title tests ---
+
+    #[test]
+    fn should_auto_title_true_for_first_message_in_new_chat() {
+        assert!(should_auto_title(&[msg("user")], "New chat"));
+    }
+
+    #[test]
+    fn should_auto_title_false_for_second_message() {
+        assert!(!should_auto_title(&[msg("user"), msg("assistant")], "New chat"));
+    }
+
+    #[test]
+    fn should_auto_title_false_for_manually_renamed_session() {
+        assert!(!should_auto_title(&[msg("user")], "My custom title"));
+    }
+
+    #[test]
+    fn should_auto_title_false_for_empty_message_list() {
+        assert!(!should_auto_title(&[], "New chat"));
+    }
 }

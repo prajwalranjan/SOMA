@@ -3,6 +3,23 @@ use crate::services::ollama_client::{Message, OllamaApi, OllamaClient};
 use crate::services::prompt_builder::PromptBuilder;
 use anyhow::Result;
 
+const SESSION_TITLE_HARD_CAP: usize = 60;
+
+/// Cleans up a raw LLM response into a usable session title: strips surrounding
+/// whitespace and quote characters, caps at SESSION_TITLE_HARD_CAP chars, and
+/// falls back to "New chat" if the result is empty after trimming.
+pub fn parse_session_title(response: &str) -> String {
+    let trimmed = response.trim().trim_matches('"').trim_matches('\'').trim();
+    if trimmed.is_empty() {
+        return "New chat".to_string();
+    }
+    if trimmed.chars().count() > SESSION_TITLE_HARD_CAP {
+        trimmed.chars().take(SESSION_TITLE_HARD_CAP).collect()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 pub struct ChatService<C: OllamaApi = OllamaClient> {
     pub model: String,
     client: C,
@@ -34,6 +51,17 @@ impl<C: OllamaApi> ChatService<C> {
                 ],
             )
             .await
+    }
+
+    /// Generates a short session title (≤5 words) from the first user message,
+    /// using the same OllamaApi client as the rest of the service.
+    pub async fn generate_session_title(&self, first_message: &str) -> Result<String> {
+        let prompt = PromptBuilder::session_title_prompt(first_message);
+        let response = self
+            .client
+            .chat(&self.model, vec![Message { role: "user".to_string(), content: prompt }])
+            .await?;
+        Ok(parse_session_title(&response))
     }
 }
 
@@ -72,6 +100,64 @@ mod tests {
             logged_at: "2024-01-01T00:00:00Z".to_string(),
             sentiment: None,
         }
+    }
+
+    // --- parse_session_title tests ---
+
+    #[test]
+    fn parse_session_title_trims_whitespace() {
+        assert_eq!(parse_session_title("  Goals for Next Month  "), "Goals for Next Month");
+    }
+
+    #[test]
+    fn parse_session_title_removes_surrounding_double_quotes() {
+        assert_eq!(parse_session_title("\"My Session Title\""), "My Session Title");
+    }
+
+    #[test]
+    fn parse_session_title_removes_surrounding_single_quotes() {
+        assert_eq!(parse_session_title("'My Session Title'"), "My Session Title");
+    }
+
+    #[test]
+    fn parse_session_title_returns_new_chat_for_empty_response() {
+        assert_eq!(parse_session_title(""), "New chat");
+    }
+
+    #[test]
+    fn parse_session_title_returns_new_chat_for_whitespace_only() {
+        assert_eq!(parse_session_title("   "), "New chat");
+    }
+
+    #[test]
+    fn parse_session_title_caps_at_hard_cap() {
+        let long = "a".repeat(SESSION_TITLE_HARD_CAP + 20);
+        let result = parse_session_title(&long);
+        assert_eq!(result.chars().count(), SESSION_TITLE_HARD_CAP);
+    }
+
+    #[test]
+    fn parse_session_title_leaves_short_title_unchanged() {
+        assert_eq!(parse_session_title("Short title"), "Short title");
+    }
+
+    // --- generate_session_title tests ---
+
+    #[tokio::test]
+    async fn generate_session_title_returns_cleaned_llm_response() {
+        let svc = ChatService::with_client("test-model", MockClient::new("Goals For Next Month"));
+        let title = svc
+            .generate_session_title("What are my goals for next month?")
+            .await
+            .unwrap();
+        assert_eq!(title, "Goals For Next Month");
+    }
+
+    #[tokio::test]
+    async fn generate_session_title_strips_quotes_from_llm_response() {
+        let svc = ChatService::with_client("test-model", MockClient::new("\"Planning Next Month\""));
+        let title = svc.generate_session_title("Let's plan next month").await.unwrap();
+        assert_eq!(title, "Planning Next Month");
     }
 
     #[tokio::test]

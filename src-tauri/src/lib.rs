@@ -6,6 +6,7 @@ mod services;
 mod settings;
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
 use tauri::Manager;
 
 static SOMA_OWNS_OLLAMA: AtomicBool = AtomicBool::new(false);
@@ -41,8 +42,11 @@ pub fn run() {
             std::fs::create_dir_all(&app_dir).expect("failed to create app data dir");
             let db_path = app_dir.join("soma.db");
             let conn = db::init_db(&db_path).expect("failed to initialise database");
-            let conn = std::sync::Arc::new(std::sync::Mutex::new(conn));
+            let conn = Arc::new(std::sync::Mutex::new(conn));
             app.manage(conn);
+
+            let generating_insights = Arc::new(AtomicBool::new(false));
+            app.manage(generating_insights);
 
             // Run all Ollama startup work in a background thread so the UI
             // thread is never blocked by subprocess calls or the post-spawn wait.
@@ -145,6 +149,7 @@ pub fn run() {
             commands::get_chat_history,
             commands::get_insights,
             commands::generate_insights,
+            commands::is_generating_insights,
             commands::check_ollama,
             commands::get_system_status,
             commands::get_settings,

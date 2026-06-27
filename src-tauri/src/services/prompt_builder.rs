@@ -23,6 +23,13 @@ impl PromptBuilder {
         )
     }
 
+    pub fn session_title_prompt(first_message: &str) -> String {
+        format!(
+            "Create a very short title (5 words or fewer) for a chat session that starts with this message:\n\n\"{}\"\n\nRespond with ONLY the title. No quotes, no explanation, no punctuation at the start or end.",
+            first_message
+        )
+    }
+
     pub fn insight_prompt(notes: &[Note]) -> String {
         let notes_text = notes
             .iter()
@@ -60,6 +67,24 @@ mod tests {
             logged_at: "2024-01-01T00:00:00Z".to_string(),
             sentiment: None,
         }
+    }
+
+    #[test]
+    fn session_title_prompt_contains_first_message_content() {
+        let prompt = PromptBuilder::session_title_prompt("What are my goals for next month?");
+        assert!(
+            prompt.contains("What are my goals for next month?"),
+            "prompt must embed the user's first message"
+        );
+    }
+
+    #[test]
+    fn session_title_prompt_instructs_five_words_or_fewer() {
+        let prompt = PromptBuilder::session_title_prompt("Tell me about my notes");
+        assert!(
+            prompt.contains("5 words or fewer"),
+            "prompt must instruct the model to keep title to 5 words or fewer"
+        );
     }
 
     #[test]
