@@ -3,6 +3,60 @@ use crate::services::ollama_client::{Message, OllamaApi, OllamaClient};
 use crate::services::prompt_builder::PromptBuilder;
 use anyhow::Result;
 
+// Max chars before a title is considered implausibly long (prompt asks for 5 words).
+const TITLE_HARD_CAP: usize = 80;
+const TITLE_TRUNCATE_TO: usize = 60;
+
+pub fn parse_insight_response(response: &str) -> (String, String) {
+    if response.trim().is_empty() {
+        return ("Pattern detected".to_string(), String::new());
+    }
+
+    let lower = response.to_lowercase();
+    let title_pos = lower.find("title:");
+    let insight_pos = lower.find("insight:");
+
+    match (title_pos, insight_pos) {
+        (Some(tp), Some(ip)) => {
+            let (title_raw, body_raw) = if tp < ip {
+                let title_text = response[tp + "title:".len()..ip].trim();
+                let body_text = response[ip + "insight:".len()..].trim();
+                (title_text, body_text)
+            } else {
+                // Unusual ordering: insight before title
+                let body_text = response[ip + "insight:".len()..tp].trim();
+                let title_text = response[tp + "title:".len()..].trim();
+                (title_text, body_text)
+            };
+            (truncate_title(title_raw), body_raw.to_string())
+        }
+        (Some(tp), None) => {
+            let title_text = response[tp + "title:".len()..].trim();
+            (truncate_title(title_text), response.to_string())
+        }
+        (None, Some(ip)) => {
+            let body = response[ip + "insight:".len()..].trim().to_string();
+            ("Pattern detected".to_string(), body)
+        }
+        (None, None) => ("Pattern detected".to_string(), response.to_string()),
+    }
+}
+
+fn truncate_title(raw: &str) -> String {
+    if raw.chars().count() <= TITLE_HARD_CAP {
+        return raw.to_string();
+    }
+    let truncated: String = raw.chars().take(TITLE_TRUNCATE_TO).collect();
+    // Prefer breaking at a sentence boundary within the truncated portion
+    if let Some(pos) = truncated.rfind(['.', '!', '?']) {
+        let candidate = truncated[..=pos].trim();
+        if !candidate.is_empty() {
+            return candidate.to_string();
+        }
+    }
+    truncated.trim_end().to_string()
+}
+
 const MIN_POINTS: usize = 2;
 
 fn compute_adaptive_epsilon(embeddings: &[crate::models::Embedding]) -> f32 {
@@ -142,19 +196,7 @@ impl<C: OllamaApi> InsightService<C> {
             )
             .await?;
 
-        let title = response
-            .lines()
-            .find(|l| l.starts_with("TITLE:"))
-            .map(|l| l.replace("TITLE:", "").trim().to_string())
-            .unwrap_or_else(|| "Pattern detected".to_string());
-
-        let body = response
-            .lines()
-            .find(|l| l.starts_with("INSIGHT:"))
-            .map(|l| l.replace("INSIGHT:", "").trim().to_string())
-            .unwrap_or_else(|| response.clone());
-
-        Ok((title, body))
+        Ok(parse_insight_response(&response))
     }
 }
 
@@ -162,6 +204,86 @@ impl<C: OllamaApi> InsightService<C> {
 mod tests {
     use super::*;
     use crate::models::Embedding;
+
+    // --- parse_insight_response tests ---
+
+    #[test]
+    fn parse_insight_response_perfect_format() {
+        let (title, body) = parse_insight_response("TITLE: Foo\nINSIGHT: Bar");
+        assert_eq!(title, "Foo");
+        assert_eq!(body, "Bar");
+    }
+
+    #[test]
+    fn parse_insight_response_lowercase_labels() {
+        let (title, body) = parse_insight_response("Title: Foo\nInsight: Bar");
+        assert_eq!(title, "Foo");
+        assert_eq!(body, "Bar");
+    }
+
+    #[test]
+    fn parse_insight_response_both_labels_on_one_line() {
+        // Exact real-world malformed output from phi3:mini (the production bug).
+        let input = "Title: Reflections on Habits and Pleasures Insight: The user finds \
+            motivation in exercise, enjoys spicy food like biryani but also \
+            acknowledges a dependency on caffeine.";
+        let (title, body) = parse_insight_response(input);
+        assert_eq!(title, "Reflections on Habits and Pleasures", "should extract title before Insight:");
+        assert!(
+            body.starts_with("The user finds"),
+            "body should start with insight text, got: {body}"
+        );
+        assert!(
+            !body.contains("Title:") && !body.contains("title:"),
+            "body must not contain the raw label text"
+        );
+    }
+
+    #[test]
+    fn parse_insight_response_only_title_label() {
+        // No insight label — title extracted, full response used as body fallback.
+        let input = "TITLE: Morning Routines";
+        let (title, body) = parse_insight_response(input);
+        assert_eq!(title, "Morning Routines");
+        assert_eq!(body, input, "body should be the full response when no INSIGHT: label");
+    }
+
+    #[test]
+    fn parse_insight_response_no_labels_falls_back() {
+        let input = "These notes are about morning routines and coffee habits.";
+        let (title, body) = parse_insight_response(input);
+        assert_eq!(title, "Pattern detected");
+        assert_eq!(body, input);
+    }
+
+    #[test]
+    fn parse_insight_response_truncates_implausibly_long_title() {
+        let long_title = "The user seems to explore multiple themes in their journaling \
+            including exercise food preferences and caffeine consumption patterns \
+            across different days and moods which is very notable";
+        let input = format!("Title: {long_title} Insight: Key themes.");
+        let (title, body) = parse_insight_response(&input);
+        assert!(
+            title.chars().count() <= TITLE_HARD_CAP,
+            "title longer than {TITLE_HARD_CAP} chars should be truncated, got: {title}"
+        );
+        assert_ne!(title, "Pattern detected", "a title label was present, should not fall back");
+        assert!(body.contains("Key themes"), "body should contain the insight text");
+    }
+
+    #[test]
+    fn parse_insight_response_empty_input() {
+        let (title, body) = parse_insight_response("");
+        assert_eq!(title, "Pattern detected");
+        assert_eq!(body, "");
+    }
+
+    #[test]
+    fn parse_insight_response_whitespace_only_input() {
+        let (title, body) = parse_insight_response("   \n\t  ");
+        assert_eq!(title, "Pattern detected");
+        assert_eq!(body, "");
+    }
 
     fn make_embedding(note_id: &str, vector: Vec<f32>) -> Embedding {
         Embedding {
