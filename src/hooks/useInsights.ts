@@ -8,7 +8,22 @@ export function useInsights() {
     const [generating, setGenerating] = useState(false);
 
     useEffect(() => {
-        fetchInsights();
+        async function init() {
+            try {
+                setLoading(true);
+                const [data, isGenerating] = await Promise.all([
+                    invoke<Insight[]>("get_insights"),
+                    invoke<boolean>("is_generating_insights"),
+                ]);
+                setInsights(data);
+                setGenerating(isGenerating);
+            } catch (e) {
+                console.error(e);
+            } finally {
+                setLoading(false);
+            }
+        }
+        init();
     }, []);
 
     async function fetchInsights() {

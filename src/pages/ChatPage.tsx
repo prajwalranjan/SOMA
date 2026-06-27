@@ -10,6 +10,7 @@ export function ChatPage() {
         createSession,
         renameSession,
         deleteSession,
+        refetch: refetchSessions,
     } = useSessions();
     const { messages, loading, error, sendMessage } = useChat(activeSessionId);
     const [input, setInput] = useState("");
@@ -26,6 +27,8 @@ export function ChatPage() {
         const query = input;
         setInput("");
         await sendMessage(query);
+        // Refresh sessions list to pick up any auto-generated title from the backend.
+        refetchSessions();
     }
 
     function handleKeyDown(e: React.KeyboardEvent) {
