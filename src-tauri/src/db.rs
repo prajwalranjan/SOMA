@@ -53,5 +53,22 @@ pub fn init_db(db_path: &Path) -> Result<Connection> {
         );
     ",
     )?;
+
+    // Migrations for columns added after initial schema.
+    // SQLite has no ADD COLUMN IF NOT EXISTS; attempt each and swallow only
+    // "duplicate column name" errors (SQLITE_ERROR with that message text).
+    for sql in [
+        "ALTER TABLE note_chunks ADD COLUMN clustering_embedding TEXT",
+        "ALTER TABLE note_chunks ADD COLUMN embedding_model TEXT",
+        "ALTER TABLE note_chunks ADD COLUMN clustering_embedding_model TEXT",
+    ] {
+        if let Err(e) = conn.execute(sql, []) {
+            let msg = e.to_string();
+            if !msg.contains("duplicate column name") {
+                return Err(e);
+            }
+        }
+    }
+
     Ok(conn)
 }
