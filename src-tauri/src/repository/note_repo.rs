@@ -1,4 +1,6 @@
-use crate::models::{Embedding, Note};
+use crate::models::Note;
+#[cfg(test)]
+use crate::models::Embedding;
 use anyhow::Result;
 use chrono::Utc;
 use rusqlite::Connection;
@@ -8,14 +10,7 @@ pub trait NoteRepository {
     fn create(&self, content: &str, thought_at: Option<String>) -> Result<Note>;
     fn get_all(&self) -> Result<Vec<Note>>;
     fn search_fulltext(&self, query: &str) -> Result<Vec<Note>>;
-    #[allow(dead_code)]
-    fn store_embedding(&self, embedding: &Embedding) -> Result<()>;
-    #[allow(dead_code)]
-    fn get_all_embeddings(&self) -> Result<Vec<Embedding>>;
-    #[allow(dead_code)]
     fn get_notes_by_ids(&self, ids: &[String]) -> Result<Vec<Note>>;
-    #[allow(dead_code)]
-    fn count_with_embeddings(&self) -> Result<usize>;
     fn update(&self, id: &str, content: &str, thought_at: Option<String>) -> Result<Note>;
     fn delete(&self, id: &str) -> Result<()>;
     fn get_by_id(&self, id: &str) -> Result<Option<Note>>;
@@ -92,43 +87,6 @@ impl<'a> NoteRepository for SqliteNoteRepository<'a> {
         Ok(notes)
     }
 
-    fn store_embedding(&self, embedding: &Embedding) -> Result<()> {
-        let json = serde_json::to_string(&embedding.vector)?;
-        self.conn.execute(
-            "UPDATE notes SET embedding_ref = ?1 WHERE id = ?2",
-            rusqlite::params![json, embedding.note_id],
-        )?;
-        Ok(())
-    }
-
-    fn get_all_embeddings(&self) -> Result<Vec<Embedding>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, embedding_ref, logged_at FROM notes WHERE embedding_ref IS NOT NULL",
-        )?;
-
-        let embeddings = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })?
-            .filter_map(|r| r.ok())
-            .filter_map(|(id, json, created_at)| {
-                let vector: Vec<f32> = serde_json::from_str(&json).ok()?;
-                Some(Embedding {
-                    note_id: id,
-                    vector,
-                    model: "nomic-embed-text".to_string(),
-                    created_at,
-                })
-            })
-            .collect();
-
-        Ok(embeddings)
-    }
-
     fn get_notes_by_ids(&self, ids: &[String]) -> Result<Vec<Note>> {
         if ids.is_empty() {
             return Ok(vec![]);
@@ -167,15 +125,6 @@ impl<'a> NoteRepository for SqliteNoteRepository<'a> {
             .collect();
 
         Ok(notes)
-    }
-
-    fn count_with_embeddings(&self) -> Result<usize> {
-        let count = self.conn.query_row(
-            "SELECT COUNT(*) FROM notes WHERE embedding_ref IS NOT NULL",
-            [],
-            |row| row.get(0),
-        )?;
-        Ok(count)
     }
 
     fn update(&self, id: &str, content: &str, thought_at: Option<String>) -> Result<Note> {
@@ -226,6 +175,30 @@ impl<'a> NoteRepository for SqliteNoteRepository<'a> {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e.into()),
         }
+    }
+}
+
+// These methods were part of an older per-note embedding design that the chunk
+// repo superseded. They are no longer in the NoteRepository trait but are kept
+// here for the tests that set up and verify embedding_ref state.
+#[cfg(test)]
+impl<'a> SqliteNoteRepository<'a> {
+    pub fn store_embedding(&self, embedding: &Embedding) -> Result<()> {
+        let json = serde_json::to_string(&embedding.vector)?;
+        self.conn.execute(
+            "UPDATE notes SET embedding_ref = ?1 WHERE id = ?2",
+            rusqlite::params![json, embedding.note_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn count_with_embeddings(&self) -> Result<usize> {
+        let count = self.conn.query_row(
+            "SELECT COUNT(*) FROM notes WHERE embedding_ref IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count)
     }
 }
 

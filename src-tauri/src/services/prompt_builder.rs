@@ -40,3 +40,66 @@ impl PromptBuilder {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::Note;
+
+    fn make_note(content: &str) -> Note {
+        Note {
+            id: "id1".to_string(),
+            content: content.to_string(),
+            thought_at: "2024-01-01T00:00:00Z".to_string(),
+            logged_at: "2024-01-01T00:00:00Z".to_string(),
+            sentiment: None,
+        }
+    }
+
+    #[test]
+    fn chat_system_prompt_with_no_notes_says_no_notes_found() {
+        let prompt = PromptBuilder::chat_system_prompt(&[]);
+        assert!(
+            prompt.contains("No relevant notes found."),
+            "empty notes must produce 'No relevant notes found.' message"
+        );
+    }
+
+    #[test]
+    fn chat_system_prompt_includes_note_content_and_date() {
+        let notes = vec![make_note("I love pizza")];
+        let prompt = PromptBuilder::chat_system_prompt(&notes);
+        assert!(prompt.contains("I love pizza"));
+        assert!(prompt.contains("2024-01-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn chat_system_prompt_includes_all_provided_notes() {
+        let notes = vec![make_note("First thought"), make_note("Second thought")];
+        let prompt = PromptBuilder::chat_system_prompt(&notes);
+        assert!(prompt.contains("First thought"));
+        assert!(prompt.contains("Second thought"));
+    }
+
+    #[test]
+    fn insight_prompt_contains_note_content() {
+        let notes = vec![make_note("I exercise every morning")];
+        let prompt = PromptBuilder::insight_prompt(&notes);
+        assert!(prompt.contains("I exercise every morning"));
+        assert!(prompt.contains("2024-01-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn insight_prompt_instructs_model_to_use_title_insight_format() {
+        let notes = vec![make_note("some content")];
+        let prompt = PromptBuilder::insight_prompt(&notes);
+        assert!(
+            prompt.contains("TITLE: <title>"),
+            "prompt must include TITLE: <title> format instruction"
+        );
+        assert!(
+            prompt.contains("INSIGHT: <insight>"),
+            "prompt must include INSIGHT: <insight> format instruction"
+        );
+    }
+}
