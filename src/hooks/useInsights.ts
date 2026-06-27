@@ -26,18 +26,6 @@ export function useInsights() {
         init();
     }, []);
 
-    async function fetchInsights() {
-        try {
-            setLoading(true);
-            const data = await invoke<Insight[]>("get_insights");
-            setInsights(data);
-        } catch (e) {
-            console.error(e);
-        } finally {
-            setLoading(false);
-        }
-    }
-
     async function generateInsights() {
         try {
             setGenerating(true);
